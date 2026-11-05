@@ -123,6 +123,27 @@ Accepting new work after an ambiguous interruption would create a split-brain se
 
 Plugins that must wait for tools to stop use [confirmed execution control](../public-docs/sdk/reference.md#confirmed-execution-control). Its identity includes the runtime and daemon run token. The foreground mutation lane protects the capture, stop and continuation admission; native terminal events and idle state alone do not authorize continuation. Provider adapters opt in through `AgentSession.stopTurn(turnId)`, which must confirm the captured turn and its tools. An adapter without that evidence leaves the operation unresolved.
 
+Before closing or reloading a runtime that supports confirmed stopping, the daemon blocks new
+execution identity exposure and confirms every execution whose identity was exposed. Capture, tool
+capture and guidance reject unconfirmed identity exposure while release is in progress. A cached
+guidance result whose execution was confirmed stopped can still be read by retrying the original
+message and identity, without sending another prompt or affecting a newer execution.
+
+Confirmation or provider close failure retains runtime ownership for retry. A pending provider close
+retains the barrier; later close or reload requests join the same operation. Disposal discards
+provider ownership evidence, so a closed runtime cannot supply a missing confirmation retroactively.
+
+History limits preserve exposed, unconfirmed executions while their runtime is live or its release
+is unresolved, along with Codex turn/tool ownership that has not passed confirmed stopping. Memory
+can grow beyond those limits while confirmations remain unresolved. For providers without `stopTurn`,
+a successful provider close discards unconfirmed execution metadata and guidance receipts. Subsequent
+stop requests for those identities return `unknown`.
+
+Confirmed manager records and guidance receipts remain usable across runtime replacement, subject to
+history eviction. Closed runtimes no longer protect their latest execution from eviction. Eviction or
+daemon restart makes the corresponding identities unknown. Codex may evict confirmed ownership
+records when retaining newer history.
+
 ## Relationships
 
 Agents can launch other agents via the agent-scoped `create_agent` MCP tool. Agent-scoped creation is always asynchronous and always stamps `paseo.parent-agent-id`, pointing back at the caller. Omit `workspaceId` to use the caller's workspace, or pass an existing workspace ID returned by `create_workspace`. Placement never changes parentage.

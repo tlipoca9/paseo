@@ -327,11 +327,11 @@ describe("an interrupted Codex turn's commands end before the next turn", () => 
     harness.appServer.assertNoErrors();
   });
 
-  test("retains accepted interrupts for only the latest sixteen turns", async () => {
+  test("retains confirmed stops for only the latest sixteen turns", async () => {
     const harness = createHarness();
     for (let index = 0; index < 17; index++) {
       await harness.startTurn("run a command", `native-${index}`);
-      await harness.interrupts();
+      await harness.session.stopTurn!(`codex-turn-${index}`);
     }
     await harness.startTurn("correction", "native-current");
     harness.appServer.startsTerminalCommand({
@@ -399,6 +399,22 @@ test("confirmed stop still owns commands after the captured turn completes", asy
   await harness.completesTurn();
   await harness.session.stopTurn!("codex-turn-0");
   expect(harness.terminated()).toEqual(["201"]);
+});
+
+test("confirmed stop retains command ownership beyond sixteen completed turns", async () => {
+  const harness = createHarness();
+  await harness.startTurn("start a persistent command", "native-first");
+  await harness.runsCommand({ turnId: "native-first", processId: "201" });
+  await harness.completesTurn();
+  for (let index = 1; index <= 16; index++) {
+    await harness.startTurn("follow-up", `native-${index}`);
+    await harness.completesTurn();
+  }
+
+  await harness.session.stopTurn!("codex-turn-0");
+
+  expect(harness.terminated()).toEqual(["201"]);
+  harness.appServer.assertNoErrors();
 });
 
 test("confirmed stop reports terminal cleanup failure and retries the same execution", async () => {

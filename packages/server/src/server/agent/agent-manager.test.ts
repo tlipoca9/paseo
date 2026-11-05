@@ -1727,6 +1727,96 @@ async function createControlledInterruptFixture(options: {
   };
 }
 
+class ExecutionStopTestSession extends CloseRecordingTestAgentSession {
+  private turnCount = 0;
+  turnId = "";
+  readonly stopRequests: string[] = [];
+  interrupts = 0;
+  closeCalls = 0;
+  releaseRuntime: () => Promise<void> = async () => {};
+  confirmStop: () => Promise<void> = async () => {};
+
+  override async startTurn(): Promise<{ turnId: string }> {
+    this.turnCount++;
+    this.turnId = "execution-turn-" + this.turnCount;
+    return { turnId: this.turnId };
+  }
+
+  override async close(): Promise<void> {
+    this.closeCalls++;
+    await this.releaseRuntime();
+    await super.close();
+  }
+
+  async stopTurn(turnId: string): Promise<void> {
+    if (this.closed) throw new Error("Execution ownership was released");
+    this.stopRequests.push(turnId);
+    await this.confirmStop();
+  }
+
+  override async interrupt(): Promise<void> {
+    this.interrupts++;
+  }
+}
+
+async function createExecutionStopFixture({
+  interruptSessionMs = 10,
+  reloadSessionCloseMs = 1000,
+} = {}) {
+  const workdir = mkdtempSync(join(tmpdir(), "agent-manager-execution-stop-"));
+  const storage = new AgentStorage(join(workdir, "agents"), logger);
+  const original = new ExecutionStopTestSession({ provider: "codex", cwd: workdir });
+  const replacement = new ExecutionStopTestSession({ provider: "codex", cwd: workdir });
+  const client = new (class extends TestAgentClient {
+    override async createSession(): Promise<AgentSession> {
+      return original;
+    }
+
+    override async resumeSession(): Promise<AgentSession> {
+      return replacement;
+    }
+  })();
+  const manager = new AgentManager({
+    clients: { codex: client },
+    registry: storage,
+    logger,
+    rescueTimeouts: { interruptSessionMs, reloadSessionCloseMs },
+  });
+  const created = await manager.createAgent({ provider: "codex", cwd: workdir }, undefined, {
+    workspaceId: undefined,
+  });
+  onTestFinished(async () => {
+    original.confirmStop = async () => {};
+    replacement.confirmStop = async () => {};
+    await manager.closeAgent(created.id);
+    await storage.flush();
+    rmSync(workdir, { recursive: true, force: true });
+  });
+  return {
+    agentId: created.id,
+    manager,
+    storage,
+    original,
+    replacement,
+    async startTurn(clientMessageId?: string) {
+      const running = drainAsyncGenerator(
+        manager.streamAgent(created.id, "exercise execution stop", { clientMessageId }),
+      );
+      await manager.waitForAgentRunStart(created.id);
+      return {
+        async complete(session: ExecutionStopTestSession) {
+          session.pushEvent({
+            type: "turn_completed",
+            provider: "codex",
+            turnId: session.turnId,
+          });
+          await running;
+        },
+      };
+    },
+  };
+}
+
 class HeldRuntimeInfoSession extends TestAgentSession {
   private readonly runtimeInfoRequested = deferred<void>();
   private readonly runtimeInfoAllowed = deferred<void>();
@@ -2744,6 +2834,451 @@ test("reload releases the original writer before resuming the same session", asy
   }
 });
 
+test("confirmed execution stop survives reload after provider ownership is released", async () => {
+  const f = await createExecutionStopFixture();
+  const run = await f.startTurn();
+  await run.complete(f.original);
+  const execution = await f.manager.captureAgentExecution(f.agentId);
+  if (!execution) throw new Error("Expected an unconfirmed execution");
+
+  await f.manager.reloadAgentSession(f.agentId);
+
+  expect(f.original.closed).toBe(true);
+  expect(f.original.stopRequests).toEqual([execution.turnId]);
+  expect(await f.manager.stopAgentExecution(execution)).toEqual({ status: "stopped" });
+  expect(f.replacement.stopRequests).toEqual([]);
+  expect(f.manager.getAgent(f.agentId)?.session).toBe(f.replacement);
+});
+
+test("confirmed execution stop survives closing and reopening the agent", async () => {
+  const f = await createExecutionStopFixture();
+  const run = await f.startTurn("captured-before-close");
+  await run.complete(f.original);
+  const execution = await f.manager.captureAgentExecution(f.agentId, "captured-before-close");
+  if (!execution) throw new Error("Expected an unconfirmed execution");
+
+  await f.manager.closeAgent(f.agentId);
+  await ensureAgentLoaded(f.agentId, {
+    agentManager: f.manager,
+    agentStorage: f.storage,
+    logger,
+  });
+
+  expect(f.original.closed).toBe(true);
+  expect(f.original.stopRequests).toEqual([execution.turnId]);
+  expect(await f.manager.stopAgentExecution(execution)).toEqual({ status: "stopped" });
+  expect(f.replacement.stopRequests).toEqual([]);
+});
+
+test.each(["reload", "close"])(
+  "guided continuation remains stoppable after %s without recapture",
+  async (action) => {
+    const f = await createExecutionStopFixture();
+    const run = await f.startTurn();
+    await run.complete(f.original);
+    const execution = await f.manager.captureAgentExecution(f.agentId);
+    if (!execution) throw new Error("Expected an unconfirmed execution");
+
+    const guidance = await f.manager.guideAgentExecution({
+      execution,
+      prompt: "continue the task",
+      messageId: "guided-continuation",
+    });
+    expect(guidance.result.status).toBe("continued");
+    const continued = guidance.result.execution;
+    expect(continued.runId).not.toBe(execution.runId);
+    if (!guidance.iterator) throw new Error("Expected a continuation stream");
+    const continuedRun = drainAsyncGenerator(guidance.iterator);
+    f.original.pushEvent({
+      type: "turn_completed",
+      provider: "codex",
+      turnId: f.original.turnId,
+    });
+    await continuedRun;
+
+    if (action === "reload") {
+      await f.manager.reloadAgentSession(f.agentId);
+    } else {
+      await f.manager.closeAgent(f.agentId);
+    }
+
+    expect(await f.manager.stopAgentExecution(continued)).toEqual({ status: "stopped" });
+    expect(f.original.stopRequests).toEqual([execution.turnId, continued.turnId]);
+    expect(f.replacement.stopRequests).toEqual([]);
+  },
+);
+
+test.each(["reload", "close"])(
+  "%s refuses late identity capture while confirming runtime release",
+  async (action) => {
+    const f = await createExecutionStopFixture({ interruptSessionMs: 1000 });
+    const first = await f.startTurn("first-message");
+    await first.complete(f.original);
+    const second = await f.startTurn("second-message");
+    await second.complete(f.original);
+    const captured = await f.manager.captureAgentExecution(f.agentId, "second-message");
+    if (!captured) throw new Error("Expected an unconfirmed execution");
+    const confirming = deferred<void>();
+    const release = deferred<void>();
+    f.original.confirmStop = async () => {
+      confirming.resolve();
+      await release.promise;
+    };
+
+    let disposing: Promise<unknown>;
+    if (action === "reload") {
+      disposing = f.manager.reloadAgentSession(f.agentId);
+    } else {
+      disposing = f.manager.closeAgent(f.agentId);
+    }
+    try {
+      await confirming.promise;
+      expect(() => f.manager.captureToolExecution(f.agentId)).toThrow(
+        "Execution ownership is being released",
+      );
+      await expect(f.manager.captureAgentExecution(f.agentId, "first-message")).rejects.toThrow(
+        "Execution ownership is being released",
+      );
+    } finally {
+      release.resolve();
+      await disposing;
+    }
+
+    expect(await f.manager.stopAgentExecution(captured)).toEqual({ status: "stopped" });
+    expect(f.original.stopRequests).toEqual([captured.turnId]);
+  },
+);
+
+test.each(["reload", "close"])(
+  "guidance receipts replay confirmed results after %s without affecting a newer turn",
+  async (action) => {
+    const f = await createExecutionStopFixture({ interruptSessionMs: 1000 });
+    const run = await f.startTurn();
+    await run.complete(f.original);
+    const execution = await f.manager.captureAgentExecution(f.agentId);
+    if (!execution) throw new Error("Expected an unconfirmed execution");
+    const request = { execution, prompt: "continue the task", messageId: "receipt" };
+    const guidance = await f.manager.guideAgentExecution(request);
+    if (!guidance.iterator) throw new Error("Expected a continuation stream");
+    const continuation = drainAsyncGenerator(guidance.iterator);
+    f.original.pushEvent({
+      type: "turn_completed",
+      provider: "codex",
+      turnId: f.original.turnId,
+    });
+    await continuation;
+    const confirming = deferred<void>();
+    const release = deferred<void>();
+    f.original.confirmStop = async () => {
+      confirming.resolve();
+      await release.promise;
+    };
+
+    let disposing: Promise<unknown>;
+    if (action === "reload") {
+      disposing = f.manager.reloadAgentSession(f.agentId);
+    } else {
+      disposing = f.manager.closeAgent(f.agentId);
+    }
+    try {
+      await confirming.promise;
+      await expect(f.manager.guideAgentExecution(request)).rejects.toThrow(
+        "Execution ownership is being released",
+      );
+    } finally {
+      release.resolve();
+      await disposing;
+    }
+
+    expect(await f.manager.guideAgentExecution(request)).toEqual({ result: guidance.result });
+    await ensureAgentLoaded(f.agentId, {
+      agentManager: f.manager,
+      agentStorage: f.storage,
+      logger,
+    });
+    const humanRun = await f.startTurn();
+    const humanExecution = await f.manager.captureAgentExecution(f.agentId);
+    expect(await f.manager.guideAgentExecution(request)).toEqual({ result: guidance.result });
+    expect(await f.manager.captureAgentExecution(f.agentId)).toEqual(humanExecution);
+    expect(f.manager.getAgent(f.agentId)?.lifecycle).toBe("running");
+    expect(f.replacement.stopRequests).toEqual([]);
+    expect(f.replacement.interrupts).toBe(0);
+    await humanRun.complete(f.replacement);
+    expect(await f.manager.stopAgentExecution(guidance.result.execution)).toEqual({
+      status: "stopped",
+    });
+  },
+);
+
+test.each(["reload", "close"])(
+  "%s forgets unconfirmable execution identities after the provider runtime is released",
+  async (action) => {
+    const f = await createExecutionStopFixture();
+    const original: AgentSession = f.original;
+    original.stopTurn = undefined;
+    let steerCount = 0;
+    original.steerActiveTurn = async () => {
+      steerCount++;
+      return { status: "accepted" };
+    };
+    const replacement: AgentSession = f.replacement;
+    replacement.stopTurn = undefined;
+    const run = await f.startTurn("original-message");
+    const execution = await f.manager.captureAgentExecution(f.agentId);
+    if (!execution) throw new Error("Expected an unconfirmed execution");
+    const request = { execution, prompt: "guide this turn", messageId: "unconfirmed-receipt" };
+    expect((await f.manager.guideAgentExecution(request)).result.status).toBe("steered");
+    await run.complete(f.original);
+
+    if (action === "reload") {
+      await f.manager.reloadAgentSession(f.agentId);
+    } else {
+      await f.manager.closeAgent(f.agentId);
+    }
+
+    expect((await f.manager.stopAgentExecution(execution)).status).toBe("unknown");
+    await ensureAgentLoaded(f.agentId, {
+      agentManager: f.manager,
+      agentStorage: f.storage,
+      logger,
+    });
+    await expect(f.manager.captureAgentExecution(f.agentId)).rejects.toThrow(
+      "No execution ownership was observed",
+    );
+    const humanRun = await f.startTurn();
+    const humanExecution = await f.manager.captureAgentExecution(f.agentId);
+    await expect(f.manager.guideAgentExecution(request)).rejects.toMatchObject({
+      result: { status: "unknown" },
+    });
+    expect((await f.manager.stopAgentExecution(execution)).status).toBe("unknown");
+    expect(await f.manager.captureAgentExecution(f.agentId)).toEqual(humanExecution);
+    expect(f.manager.getAgent(f.agentId)?.lifecycle).toBe("running");
+    expect(steerCount).toBe(1);
+    expect(f.replacement.interrupts).toBe(0);
+    expect(f.replacement.stopRequests).toEqual([]);
+    await humanRun.complete(f.replacement);
+  },
+);
+
+test.each(["close", "timed-out reload"])(
+  "%s failure retains unconfirmable execution identities and guidance for retry",
+  async (action) => {
+    const f = await createExecutionStopFixture({ reloadSessionCloseMs: 10 });
+    const original: AgentSession = f.original;
+    original.stopTurn = undefined;
+    let steerCount = 0;
+    original.steerActiveTurn = async () => {
+      steerCount++;
+      return { status: "accepted" };
+    };
+    const run = await f.startTurn();
+    const execution = await f.manager.captureAgentExecution(f.agentId);
+    if (!execution) throw new Error("Expected an unconfirmed execution");
+    const request = { execution, prompt: "guide this turn", messageId: "retry-receipt" };
+    const guidance = await f.manager.guideAgentExecution(request);
+    await run.complete(f.original);
+    const release = deferred<void>();
+    f.original.releaseRuntime = () => release.promise;
+    let refusal: Promise<void> | undefined;
+
+    try {
+      if (action === "timed-out reload") {
+        await expect(f.manager.reloadAgentSession(f.agentId)).rejects.toThrow("Timed out closing");
+      }
+      refusal = expect(f.manager.closeAgent(f.agentId)).rejects.toThrow("provider is busy");
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      await expect(f.manager.captureAgentExecution(f.agentId)).rejects.toThrow(
+        "Execution ownership is being released",
+      );
+      await expect(f.manager.guideAgentExecution(request)).rejects.toThrow(
+        "Execution ownership is being released",
+      );
+      expect(f.original.closed).toBe(false);
+    } finally {
+      release.reject(new Error("provider is busy"));
+      await refusal;
+      f.original.releaseRuntime = async () => {};
+    }
+
+    expect(await f.manager.captureAgentExecution(f.agentId)).toEqual(execution);
+    expect((await f.manager.guideAgentExecution(request)).result).toEqual(guidance.result);
+    expect(steerCount).toBe(1);
+    await f.manager.closeAgent(f.agentId);
+    expect((await f.manager.stopAgentExecution(execution)).status).toBe("unknown");
+  },
+);
+
+test("late successful runtime release forgets unconfirmable history while keeping the capture barrier", async () => {
+  const f = await createExecutionStopFixture({ reloadSessionCloseMs: 10 });
+  const original: AgentSession = f.original;
+  original.stopTurn = undefined;
+  const run = await f.startTurn();
+  await run.complete(f.original);
+  const execution = await f.manager.captureAgentExecution(f.agentId);
+  if (!execution) throw new Error("Expected an unconfirmed execution");
+  const release = deferred<void>();
+  f.original.releaseRuntime = () => release.promise;
+
+  try {
+    await expect(f.manager.reloadAgentSession(f.agentId)).rejects.toThrow("Timed out closing");
+    await expect(f.manager.captureAgentExecution(f.agentId)).rejects.toThrow(
+      "Execution ownership is being released",
+    );
+    release.resolve();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(f.original.closed).toBe(true);
+    expect((await f.manager.stopAgentExecution(execution)).status).toBe("unknown");
+    await expect(f.manager.captureAgentExecution(f.agentId)).rejects.toThrow(
+      "Execution ownership is being released",
+    );
+    await f.manager.closeAgent(f.agentId);
+    expect(f.original.closeCalls).toBe(1);
+  } finally {
+    release.resolve();
+  }
+});
+
+test("reload retains the provider when captured execution confirmation is refused", async () => {
+  const f = await createExecutionStopFixture();
+  const run = await f.startTurn();
+  await run.complete(f.original);
+  const execution = await f.manager.captureAgentExecution(f.agentId);
+  if (!execution) throw new Error("Expected an unconfirmed execution");
+  f.original.confirmStop = async () => {
+    throw new Error("tool still running");
+  };
+
+  await expect(f.manager.reloadAgentSession(f.agentId)).rejects.toThrow("tool still running");
+  expect(f.original.closed).toBe(false);
+  expect(f.manager.getAgent(f.agentId)?.session).toBe(f.original);
+  expect(await f.manager.captureAgentExecution(f.agentId)).toEqual(execution);
+  expect(await f.manager.stopAgentExecution(execution)).toEqual({
+    status: "refused",
+    reason: "tool still running",
+  });
+
+  f.original.confirmStop = async () => {};
+  await f.manager.reloadAgentSession(f.agentId);
+  expect(await f.manager.stopAgentExecution(execution)).toEqual({ status: "stopped" });
+});
+
+test("reload retains the provider when captured execution confirmation times out", async () => {
+  const f = await createExecutionStopFixture();
+  const run = await f.startTurn();
+  await run.complete(f.original);
+  const execution = await f.manager.captureAgentExecution(f.agentId);
+  if (!execution) throw new Error("Expected an unconfirmed execution");
+  const confirmation = deferred<void>();
+  f.original.confirmStop = () => confirmation.promise;
+
+  await expect(f.manager.reloadAgentSession(f.agentId)).rejects.toThrow(
+    "Timed out confirming that the execution and its tools stopped",
+  );
+  expect(f.original.closed).toBe(false);
+  expect(f.manager.getAgent(f.agentId)?.session).toBe(f.original);
+
+  confirmation.resolve();
+  await f.manager.reloadAgentSession(f.agentId);
+  expect(await f.manager.stopAgentExecution(execution)).toEqual({ status: "stopped" });
+});
+
+test("stopping a tool-captured execution after reload leaves a newer human turn running", async () => {
+  const f = await createExecutionStopFixture();
+  const originalRun = await f.startTurn();
+  const execution = f.manager.captureToolExecution(f.agentId);
+  if (!execution) throw new Error("Expected a tool execution");
+  await originalRun.complete(f.original);
+  await f.manager.reloadAgentSession(f.agentId);
+  const newerRun = await f.startTurn();
+  const newerExecution = await f.manager.captureAgentExecution(f.agentId);
+
+  expect(await f.manager.stopAgentExecution(execution)).toEqual({ status: "stopped" });
+  expect(f.original.stopRequests).toEqual([execution.turnId]);
+  expect(f.replacement.stopRequests).toEqual([]);
+  expect(f.replacement.interrupts).toBe(0);
+  expect(f.manager.getAgent(f.agentId)?.lifecycle).toBe("running");
+  expect(await f.manager.captureAgentExecution(f.agentId)).toEqual(newerExecution);
+  await newerRun.complete(f.replacement);
+});
+
+test("confirmed history from a closed agent remains eligible for eviction", async () => {
+  const workdir = mkdtempSync(join(tmpdir(), "agent-manager-closed-history-"));
+  const storage = new AgentStorage(join(workdir, "agents"), logger);
+  const client = new (class extends TestAgentClient {
+    override async createSession(config: AgentSessionConfig): Promise<AgentSession> {
+      return new (class extends TestAgentSession {
+        async stopTurn(): Promise<void> {}
+      })(config);
+    }
+  })();
+  const manager = new AgentManager({ clients: { codex: client }, registry: storage, logger });
+  const closed = await manager.createAgent({ provider: "codex", cwd: workdir }, undefined, {
+    workspaceId: undefined,
+  });
+  const live = await manager.createAgent({ provider: "codex", cwd: workdir }, undefined, {
+    workspaceId: undefined,
+  });
+  onTestFinished(async () => {
+    await manager.closeAgent(closed.id);
+    await manager.closeAgent(live.id);
+    await storage.flush();
+    rmSync(workdir, { recursive: true, force: true });
+  });
+  await manager.runAgent(closed.id, "completed task");
+  const execution = await manager.captureAgentExecution(closed.id);
+  if (!execution) throw new Error("Expected an unconfirmed execution");
+  await manager.closeAgent(closed.id);
+  expect(await manager.stopAgentExecution(execution)).toEqual({ status: "stopped" });
+
+  for (let index = 0; index < 1024; index++) {
+    await manager.runAgent(live.id, "another task");
+  }
+
+  expect((await manager.stopAgentExecution(execution)).status).toBe("unknown");
+  expect(await manager.captureAgentExecution(live.id)).not.toBeNull();
+});
+
+test("runtime release retains unconfirmed identities beyond the execution history limit", async () => {
+  const f = await createExecutionStopFixture({ interruptSessionMs: 1000 });
+  const firstRun = await f.startTurn();
+  await firstRun.complete(f.original);
+  const first = await f.manager.captureAgentExecution(f.agentId);
+  if (!first) throw new Error("Expected an unconfirmed execution");
+  let last = first;
+  for (let index = 0; index < 1024; index++) {
+    const run = await f.startTurn();
+    await run.complete(f.original);
+    const execution = await f.manager.captureAgentExecution(f.agentId);
+    if (!execution) throw new Error("Expected an unconfirmed execution");
+    last = execution;
+  }
+
+  await f.manager.reloadAgentSession(f.agentId);
+
+  expect(await f.manager.stopAgentExecution(first)).toEqual({ status: "stopped" });
+  expect(await f.manager.stopAgentExecution(last)).toEqual({ status: "stopped" });
+  expect(f.original.stopRequests).toHaveLength(1025);
+
+  const later = await f.startTurn();
+  await later.complete(f.replacement);
+  expect((await f.manager.stopAgentExecution(first)).status).toBe("unknown");
+});
+
+test("reload does not require confirmation for executions that were never captured", async () => {
+  const f = await createExecutionStopFixture();
+  const run = await f.startTurn();
+  await run.complete(f.original);
+  f.original.confirmStop = async () => {
+    throw new Error("ownership unavailable");
+  };
+
+  await f.manager.reloadAgentSession(f.agentId);
+
+  expect(f.original.closed).toBe(true);
+  expect(f.original.stopRequests).toEqual([]);
+  expect(f.manager.getAgent(f.agentId)?.session).toBe(f.replacement);
+});
+
 test("opening during reload waits for the replacement", async () => {
   const workdir = mkdtempSync(join(tmpdir(), "agent-manager-reload-open-"));
   const storage = new AgentStorage(join(workdir, "agents"), logger);
@@ -2799,6 +3334,51 @@ test("closing during reload leaves the replacement closed", async () => {
     await storage.flush();
     rmSync(workdir, { recursive: true, force: true });
   }
+});
+
+test("close after a timed-out reload joins the pending provider close and preserves its barrier", async () => {
+  const f = await createExecutionStopFixture({ reloadSessionCloseMs: 10 });
+  const run = await f.startTurn();
+  await run.complete(f.original);
+  const release = deferred<void>();
+  f.original.releaseRuntime = async () => {
+    if (f.original.closeCalls > 1) throw new Error("Concurrent provider close refused");
+    await release.promise;
+  };
+
+  let closeSettled = false;
+  let closing: Promise<unknown> | undefined;
+  try {
+    await expect(f.manager.reloadAgentSession(f.agentId)).rejects.toThrow("Timed out closing");
+    expect(f.original.closeCalls).toBe(1);
+    closing = f.manager.closeAgent(f.agentId).then(
+      () => {
+        closeSettled = true;
+        return null;
+      },
+      (error: unknown) => {
+        closeSettled = true;
+        return error;
+      },
+    );
+    await new Promise<void>((resolve) => setImmediate(resolve));
+
+    await expect(f.manager.captureAgentExecution(f.agentId)).rejects.toThrow(
+      "Execution ownership is being released",
+    );
+    expect(() => f.manager.captureToolExecution(f.agentId)).toThrow(
+      "Execution ownership is being released",
+    );
+    expect(f.original.closeCalls).toBe(1);
+    expect(closeSettled).toBe(false);
+  } finally {
+    release.resolve();
+    await closing;
+  }
+
+  expect(await closing).toBeNull();
+  expect(f.original.closed).toBe(true);
+  expect(f.manager.getAgent(f.agentId)).toBeNull();
 });
 
 test("retrying a timed-out reload waits for the original close to finish", async () => {

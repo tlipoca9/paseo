@@ -220,6 +220,11 @@ interface GuideAgentExecutionOptions extends Pick<
   prompt: AgentPromptInput;
   messageId: string;
 }
+interface ExecutionGuidanceReceipt {
+  text: AgentPromptInput;
+  result: AgentExecutionGuideResult & Required<Pick<AgentExecutionGuideResult, "execution">>;
+}
+
 interface GuideAgentExecutionResult {
   result: AgentExecutionGuideResult;
   iterator?: AsyncGenerator<AgentStreamEvent>;
@@ -230,6 +235,11 @@ interface NormalizeConfigOptions {
   env?: Record<string, string>;
   /** Defaults to interactive. A history load reads persisted state and runs nothing. */
   purpose?: AgentResumePurpose;
+}
+
+interface SessionCloseOperation {
+  confirmed: Promise<void>;
+  closed: Promise<void>;
 }
 
 interface TimeoutOptions {
@@ -828,16 +838,15 @@ export class AgentManager {
   private readonly sessionEventTails = new Map<string, Promise<void>>();
   private readonly steerEventBarriers = new Map<string, SteerEventBarrier>();
   private readonly executionRuntimeIds = new WeakMap<AgentSession, string>();
+  private readonly releasingSessions = new WeakSet<AgentSession>();
   private readonly latestExecution = new Map<string, AgentExecution>();
-  private readonly executionGuidance = new Map<
-    string,
-    { text: AgentPromptInput; result: AgentExecutionGuideResult }
-  >();
+  private readonly executionGuidance = new Map<string, ExecutionGuidanceReceipt>();
   private readonly executions = new Map<
     string,
     {
       identity: AgentExecution;
       session: WeakRef<AgentSession>;
+      captured: boolean;
       stopped: boolean;
       clientMessageId?: string;
       steeredMessageIds?: Set<string>;
@@ -845,10 +854,35 @@ export class AgentManager {
   >();
 
   private trimExecutionRecords(): void {
-    while (this.executions.size > 1024)
-      this.executions.delete(this.executions.keys().next().value!);
+    for (const [runId, record] of this.executions) {
+      if (this.executions.size <= 1024) break;
+      const needsConfirmation = record.captured && !record.stopped;
+      const isLatest = this.latestExecution.get(record.identity.agentId)?.runId === runId;
+      const mustRetain = needsConfirmation || isLatest;
+      if (mustRetain) continue;
+      this.executions.delete(runId);
+    }
     while (this.executionGuidance.size > 1024)
       this.executionGuidance.delete(this.executionGuidance.keys().next().value!);
+  }
+
+  private exposeExecution(
+    execution: AgentExecution,
+    options?: { allowConfirmedReceipt: boolean },
+  ): AgentExecution {
+    const record = this.executions.get(execution.runId);
+    const canReplay = options?.allowConfirmedReceipt === true && record?.stopped === true;
+    if (canReplay) return record.identity;
+    const session = record?.session.deref();
+    const hasOwnership = record && session;
+    if (!hasOwnership)
+      throw new AgentExecutionStopError({
+        status: "unknown",
+        reason: "The execution is no longer retained by this daemon.",
+      });
+    this.assertExecutionCaptureAllowed(session);
+    record.captured = true;
+    return record.identity;
   }
 
   async captureAgentExecution(agentId: string, messageId?: string): Promise<AgentExecution | null> {
@@ -859,6 +893,7 @@ export class AgentManager {
       const run = this.runs.getRun(agentId);
       if (!agent)
         throw new Error("Execution ownership is unavailable until the session is reconciled.");
+      this.assertExecutionCaptureAllowed(agent.session);
       if (messageId !== undefined) {
         const matches = [...this.executions.values()].filter(
           (record) =>
@@ -871,13 +906,17 @@ export class AgentManager {
             "No unique execution ownership was observed for this message in this runtime.",
           );
         const record = matches[0]!;
-        return record.stopped ? null : record.identity;
+        if (record.stopped) return null;
+        return this.exposeExecution(record.identity);
       }
       if (!run) {
         const previous = this.latestExecution.get(agentId);
-        if (!previous || this.executions.get(previous.runId)?.session.deref() !== agent.session)
+        const record = previous ? this.executions.get(previous.runId) : undefined;
+        const hasRuntimeOwnership = record && record.session.deref() === agent.session;
+        if (!hasRuntimeOwnership)
           throw new Error("No execution ownership was observed in this runtime.");
-        return this.executions.get(previous.runId)?.stopped ? null : previous;
+        if (record.stopped) return null;
+        return this.exposeExecution(record.identity);
       }
       let runtimeId = this.executionRuntimeIds.get(agent.session);
       if (!runtimeId) {
@@ -893,13 +932,14 @@ export class AgentManager {
       this.executions.set(run.token, {
         identity,
         session: new WeakRef(agent.session),
+        captured: false,
         stopped: false,
         clientMessageId: this.executions.get(run.token)?.clientMessageId,
         steeredMessageIds: this.executions.get(run.token)?.steeredMessageIds,
       });
-      this.trimExecutionRecords();
       this.latestExecution.set(agentId, identity);
-      return identity;
+      this.trimExecutionRecords();
+      return this.exposeExecution(identity);
     });
   }
 
@@ -1003,10 +1043,12 @@ export class AgentManager {
       if (previous) {
         if (previous.text !== prompt)
           throw new Error("The guidance identity already belongs to another message.");
+        this.exposeExecution(previous.result.execution, { allowConfirmedReceipt: true });
         return { result: previous.result };
       }
       await this.drainSessionEvents(execution.agentId);
       const agent = this.requireSessionAgent(execution.agentId);
+      this.assertExecutionCaptureAllowed(agent.session);
       const record = this.executions.get(execution.runId);
       const current = this.runs.getRun(execution.agentId);
       if (
@@ -1048,7 +1090,8 @@ export class AgentManager {
           return result;
         });
         if (admitted.status === "accepted") {
-          const result: AgentExecutionGuideResult = { status: "steered", execution };
+          this.exposeExecution(execution);
+          const result = { status: "steered", execution } satisfies AgentExecutionGuideResult;
           this.executionGuidance.set(key, { text: prompt, result });
           this.trimExecutionRecords();
           return { result };
@@ -1063,6 +1106,7 @@ export class AgentManager {
           status: "superseded",
           reason: "Another execution owns the session.",
         });
+      this.assertExecutionCaptureAllowed(agent.session);
       const iterator = this.streamAgentNow(execution.agentId, prompt, {
         clientMessageId: messageId,
         inputOrigin,
@@ -1070,7 +1114,13 @@ export class AgentManager {
       });
       await iterator.next();
       const next = this.latestExecution.get(execution.agentId)!;
-      const result: AgentExecutionGuideResult = { status: "continued", execution: next };
+      try {
+        this.exposeExecution(next);
+      } catch (error) {
+        await iterator.return(undefined);
+        throw error;
+      }
+      const result = { status: "continued", execution: next } satisfies AgentExecutionGuideResult;
       this.executionGuidance.set(key, { text: prompt, result });
       this.trimExecutionRecords();
       return { result, iterator };
@@ -1088,7 +1138,7 @@ export class AgentManager {
   private readonly agentRegistrationTasks = new Set<Promise<void>>();
   private readonly inFlightAgentCloses = new Map<string, Promise<void>>();
   private readonly historySessions = new WeakSet<AgentSession>();
-  private readonly reloadedSessionCloses = new WeakMap<AgentSession, Promise<void>>();
+  private readonly sessionCloses = new WeakMap<AgentSession, SessionCloseOperation>();
   private readonly runtimeCleanupIdentities = new WeakMap<AgentSession, object>();
   private readonly collectingRuntimes = new Set<string>();
   private readonly lifecycleMutationTails = new Map<string, Promise<void>>();
@@ -1253,11 +1303,14 @@ export class AgentManager {
 
   captureToolExecution(agentId: string): AgentExecution | null {
     const agent = this.agents.get(agentId);
+    if (agent) this.assertExecutionCaptureAllowed(agent.session);
     const run = this.runs.getRun(agentId);
     const record = run ? this.executions.get(run.token) : undefined;
-    return record && agent?.session && record.session.deref() === agent.session
-      ? { ...record.identity }
-      : null;
+    const hasRuntimeOwnership =
+      record && agent?.session && record.session.deref() === agent.session;
+    if (!hasRuntimeOwnership) return null;
+    const identity = this.exposeExecution(record.identity);
+    return { ...identity };
   }
 
   async executePluginTool(
@@ -2094,16 +2147,72 @@ export class AgentManager {
     }
   }
 
-  private async closeReloadedSession(session: AgentSession, agentId: string): Promise<void> {
-    let operation = this.reloadedSessionCloses.get(session);
-    if (!operation) {
-      operation = session.close();
-      this.reloadedSessionCloses.set(session, operation);
-      // Keep pending closes across request timeouts; a retry must await the same release.
-      void operation.catch(() => this.reloadedSessionCloses.delete(session));
+  private assertExecutionCaptureAllowed(session: AgentSession): void {
+    if (this.releasingSessions.has(session))
+      throw new AgentExecutionStopError({
+        status: "refused",
+        reason: "Execution ownership is being released.",
+      });
+  }
+
+  private async confirmCapturedExecutions(session: AgentSession): Promise<void> {
+    if (!session.stopTurn) return;
+    // Confirmation must precede disposal: closed providers can no longer prove tool ownership.
+    for (const record of this.executions.values()) {
+      const needsConfirmation =
+        record.captured && !record.stopped && record.session.deref() === session;
+      if (!needsConfirmation) continue;
+      const result = await this.stopAgentExecutionNow(record.identity);
+      if (result.status !== "stopped")
+        throw new AgentExecutionStopError({ status: result.status, reason: result.reason });
     }
+  }
+
+  private discardUnconfirmableExecutions(session: AgentSession): void {
+    const discardedRunIds = new Set<string>();
+    for (const [runId, record] of this.executions) {
+      const isUnconfirmable = !record.stopped && record.session.deref() === session;
+      if (!isUnconfirmable) continue;
+      this.executions.delete(runId);
+      discardedRunIds.add(runId);
+    }
+    for (const [key, receipt] of this.executionGuidance) {
+      if (discardedRunIds.has(receipt.result.execution.runId)) {
+        this.executionGuidance.delete(key);
+      }
+    }
+  }
+
+  private closeSession(session: AgentSession): SessionCloseOperation {
+    const previous = this.sessionCloses.get(session);
+    if (previous) return previous;
+    this.releasingSessions.add(session);
+    const canConfirm = session.stopTurn !== undefined;
+    const confirmed = this.confirmCapturedExecutions(session);
+    const closed = confirmed.then(async () => {
+      await session.close();
+      const runtimeId = this.executionRuntimeIds.get(session);
+      for (const [agentId, latest] of this.latestExecution) {
+        if (latest.runtimeId === runtimeId) this.latestExecution.delete(agentId);
+      }
+      if (!canConfirm) this.discardUnconfirmableExecutions(session);
+      return;
+    });
+    const operation = { confirmed, closed };
+    this.sessionCloses.set(session, operation);
+    // Only this shared operation owns the barrier; a caller timeout cannot release it.
+    void closed.catch(() => {
+      this.sessionCloses.delete(session);
+      this.releasingSessions.delete(session);
+    });
+    return operation;
+  }
+
+  private async closeReloadedSession(session: AgentSession, agentId: string): Promise<void> {
+    const operation = this.closeSession(session);
+    await operation.confirmed;
     const result = await this.waitWithTimeout({
-      operation,
+      operation: operation.closed,
       timeoutMs: this.rescueTimeouts.reloadSessionCloseMs,
       onLateError: (error) => {
         this.logger.warn(
@@ -2279,7 +2388,7 @@ export class AgentManager {
     if (canClose && !canClose()) return false;
     // Retain ownership until shutdown succeeds. A failed close may still own a
     // native writer, so publishing a resumable closed snapshot would orphan it.
-    await agent.session.close();
+    await this.closeSession(agent.session).closed;
     await this.drainSessionEvents(agentId);
     this.cancelRunningProviderSubagents(agentId);
     const closedAgent = this.prepareAgentForClosure(agent, "agent closed");
@@ -3200,6 +3309,7 @@ export class AgentManager {
     if (this.collectingRuntimes.has(agentId) || (!this.agents.has(agentId) && this.registry))
       return this.streamAfterRuntimeCollection(agentId, prompt, options);
     const existingAgent = this.requireSessionAgent(agentId);
+    this.assertExecutionCaptureAllowed(existingAgent.session);
     if (this.historySessions.has(existingAgent.session))
       return this.streamAfterHistoryLoad(agentId, prompt, options);
     this.logger.trace(
@@ -3263,6 +3373,7 @@ export class AgentManager {
       this.executions.set(pendingRun.token, {
         identity,
         session: new WeakRef(agent.session),
+        captured: false,
         stopped: false,
         clientMessageId: options?.clientMessageId,
       });
