@@ -36,7 +36,7 @@ test("recovery saves intent before normalization, clears before dispatch, and re
       storage,
       settings: () => ({ enabled: true, prompt: "Continue verbatim.\n" }),
       eligible: async () => true,
-      dispatch: async (id, prompt) => {
+      dispatch: async ({ agentId: id, prompt }) => {
         expect((await storage.get(id))?.resumeOnStartup).toBe(false);
         if (id === "broken") throw new Error("unavailable");
         if (id === "stuck") return new Promise(() => {});
@@ -89,7 +89,7 @@ test("opt-out consumes pending recovery and excludes archived, private, owned an
       storage,
       settings: () => ({ enabled, prompt: "Resume working." }),
       eligible: async (record) => record.workspaceId !== "archived",
-      dispatch: async (id) => {
+      dispatch: async ({ agentId: id }) => {
         dispatched.push(id);
       },
       report: () => {},

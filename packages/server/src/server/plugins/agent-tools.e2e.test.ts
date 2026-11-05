@@ -1040,3 +1040,44 @@ test("session-open MCP configs are validated before a provider launches", async 
     await h.close();
   }
 }, 60_000);
+
+test("plugin tools keep their admitted execution identity when a human starts a newer run", async () => {
+  const h = await setup(
+    false,
+    `
+import { z } from "zod";
+import { defineRpc } from "@getpaseo/plugin";
+import { defineAgentTool } from "@getpaseo/plugin/server";
+let entered = false, release;
+const gate = new Promise(resolve => { release = resolve; });
+const tool = defineAgentTool({ name: "execution_owner", description: "Observe admitted execution", input: z.object({}),
+  async execute(_input, { execution }) { entered = true; await gate; return { text: JSON.stringify({ execution }) }; } });
+const control = defineRpc({ name: "control", input: z.object({ release: z.boolean() }), output: z.object({ entered: z.boolean() }) });
+export default function contribute(server) {
+  server.handle(control, input => { if (input.release) release(); return { entered }; });
+  server.addHook("agent.open.before", ({ request }) => ({ ...request, tools: [...request.tools, tool] }));
+  return () => {};
+}
+`,
+    undefined,
+    { beforeTurnComplete: () => new Promise(() => {}) },
+  );
+  try {
+    const agent = await h.create();
+    const mcp = await h.mcp();
+    await h.client.sendAgentMessage(agent.id, "team turn", { messageId: "team-turn" });
+    const execution = await h.client.captureAgentExecution(agent.id, "team-turn");
+    const tool = mcp.callTool({ name: "execution_owner", arguments: {} });
+    await expect
+      .poll(async () => await h.client.invokePluginRpc("tools-test", "control", { release: false }))
+      .toEqual({ entered: true });
+    await h.client.sendAgentMessage(agent.id, "human turn", { messageId: "human-turn" });
+    const human = await h.client.captureAgentExecution(agent.id, "human-turn");
+    expect(human?.runId).not.toBe(execution?.runId);
+    await h.client.invokePluginRpc("tools-test", "control", { release: true });
+    const response = await tool;
+    expect(JSON.parse((response.content as { text: string }[])[0]!.text)).toEqual({ execution });
+  } finally {
+    await h.close();
+  }
+}, 15000);

@@ -1080,7 +1080,7 @@ export async function createPaseoDaemon(
     }),
     eligible: async (record) =>
       !record.workspaceId || !(await workspaceRegistry?.get(record.workspaceId))?.archivedAt,
-    dispatch: (agentId, prompt) => {
+    dispatch: ({ agentId, prompt, runId }) => {
       if (!wsServer) throw new Error("Daemon is not accepting agent messages");
       return sendPromptToAgent({
         agentMessages: wsServer.agentMessages,
@@ -1090,6 +1090,7 @@ export async function createPaseoDaemon(
         agentStorage,
         logger,
         unarchive: false,
+        runOptions: { restartRecovery: { runId } },
       });
     },
     report: (agentId, err) => logger.error({ agentId, err }, "Agent restart recovery failed"),

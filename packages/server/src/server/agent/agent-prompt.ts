@@ -11,7 +11,11 @@ import { ForegroundPromptStart } from "./agent-run-state.js";
 import type { AgentStorage } from "./agent-storage.js";
 import { ensureAgentLoaded } from "./agent-loading.js";
 import { isStaleProviderSessionError } from "./stale-provider-session-error.js";
-import type { ActiveTurnBehavior } from "@getpaseo/protocol/messages";
+import type {
+  AgentExecution,
+  AgentExecutionGuideResult,
+  ActiveTurnBehavior,
+} from "@getpaseo/protocol/messages";
 
 export type AgentUnarchiveController = Pick<AgentManager, "notifyAgentState" | "unarchiveSnapshot">;
 
@@ -24,9 +28,10 @@ export type AgentRunController = Pick<
   | "replaceAgentRun"
   | "steerOrReplaceActiveTurn"
   | "streamAgent"
-> & {
-  reloadAgentSession(agentId: string): Promise<unknown>;
-};
+> &
+  Partial<Pick<AgentManager, "guideAgentExecution">> & {
+    reloadAgentSession(agentId: string): Promise<unknown>;
+  };
 
 export class AgentTurnBusyError extends Error {}
 
@@ -36,6 +41,8 @@ export class AgentTurnChangedError extends Error {}
 export interface StartAgentRunOptions {
   idleOnly?: boolean;
   admit?: () => boolean;
+  expectedExecution?: AgentExecution;
+  onExecutionGuided?: (result: AgentExecutionGuideResult) => void;
   /** Called after selecting the run, before consuming its events. */
   onDispatch?: (disposition: PromptDispatchDisposition) => void;
   replaceRunning?: boolean;
@@ -66,7 +73,21 @@ async function steerOrReplaceActiveRun(
     }
   | null
 > {
-  if (options?.activeTurnBehavior !== "steer") {
+  if (options?.expectedExecution) {
+    if (!agentManager.guideAgentExecution) throw new Error("Execution guidance is unavailable.");
+    const guided = await agentManager.guideAgentExecution({
+      execution: options.expectedExecution,
+      prompt,
+      messageId: options.runOptions?.clientMessageId ?? "",
+      inputOrigin: options.runOptions?.inputOrigin,
+      deliveryScope: options.runOptions?.deliveryScope,
+    });
+    options.onExecutionGuided?.(guided.result);
+    return guided.iterator
+      ? { disposition: "turn_started", iterator: guided.iterator }
+      : { disposition: "steered" };
+  }
+  if (options?.runOptions?.deliveryScope || options?.activeTurnBehavior !== "steer") {
     return null;
   }
   const steerOptions = options.clearPendingPermissions
@@ -119,6 +140,8 @@ export async function startAgentRun(
   logger: Logger,
   options?: StartAgentRunOptions,
 ): Promise<PromptDispatchResult> {
+  const runOptions = options?.runOptions;
+  runOptions?.deliveryScope?.assertActive();
   const snapshot = agentManager.getAgent(agentId);
   logger.trace(
     {
@@ -127,7 +150,7 @@ export async function startAgentRun(
       providerSessionId: snapshot?.persistence?.sessionId ?? undefined,
       turnId: snapshot?.activeForegroundTurnId ?? undefined,
       promptType: typeof prompt === "string" ? "string" : "structured",
-      hasRunOptions: Boolean(options?.runOptions),
+      hasRunOptions: Boolean(runOptions),
       replaceRunning: Boolean(options?.replaceRunning),
     },
     "agent.session.start_stream.request",
@@ -141,7 +164,10 @@ export async function startAgentRun(
         if (!admit()) throw new Error("Queued agent message was withdrawn");
       }
     : undefined;
-  if (await agentManager.tryRunOutOfBand(agentId, prompt, options?.runOptions, admitCommand)) {
+  if (
+    !options?.expectedExecution &&
+    (await agentManager.tryRunOutOfBand(agentId, prompt, runOptions, admitCommand))
+  ) {
     options?.onDispatch?.("out_of_band");
     return { disposition: "out_of_band" };
   }
@@ -261,6 +287,8 @@ export interface SendPromptToAgentParams {
   admit?: StartAgentRunOptions["admit"];
   /** Awaited after the agent is loaded and its mode is set, before the prompt is handed to a run. */
   beforeDispatch?: () => Promise<void>;
+  expectedExecution?: AgentExecution;
+  onExecutionGuided?: (result: AgentExecutionGuideResult) => void;
   onDispatch?: StartAgentRunOptions["onDispatch"];
   agentManager: AgentManager;
   agentStorage: AgentStorage;
@@ -450,9 +478,12 @@ export async function sendPreparedPromptToAgent(
     throw new Error("Queued agent message was withdrawn");
   }
   return await startAgentRun(params.agentManager, params.agentId, params.prompt, params.logger, {
-    replaceRunning: !params.idleOnly,
+    replaceRunning:
+      !params.idleOnly && !params.runOptions?.deliveryScope && !params.runOptions?.restartRecovery,
     idleOnly: params.idleOnly,
     admit: params.admit,
+    expectedExecution: params.expectedExecution,
+    onExecutionGuided: params.onExecutionGuided,
     onDispatch: params.onDispatch,
     activeTurnBehavior: params.activeTurnBehavior,
     clearPendingPermissions: params.clearPendingPermissions,

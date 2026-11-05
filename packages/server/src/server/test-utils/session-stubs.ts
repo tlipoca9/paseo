@@ -306,7 +306,11 @@ export function createProviderSnapshotManagerStub(): {
 
 export function createMessageReceiptsStub(): SessionOptions["messageReceipts"] {
   return {
-    send: (input) => input.send(async () => {}),
+    send: async (input) => {
+      await input.prepare?.();
+      await input.send(async () => {});
+    },
+    get: async () => ({ status: "not_found" }),
   };
 }
 

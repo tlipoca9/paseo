@@ -976,6 +976,7 @@ export class PluginRuntime {
     name: string,
     input: unknown,
     signal?: AbortSignal,
+    execution?: import("@getpaseo/protocol/messages").AgentExecution | null,
   ): Promise<AgentToolResult> {
     const loaded = this.plugins.get(pluginId);
     if (!loaded || loaded.instanceId !== pluginInstanceId)
@@ -984,7 +985,7 @@ export class PluginRuntime {
     try {
       return (await this.request(
         loaded,
-        { type: "tool.call", requestId, agent, name, input },
+        { type: "tool.call", requestId, agent, name, input, execution },
         { signal },
       )) as AgentToolResult;
     } catch (error) {

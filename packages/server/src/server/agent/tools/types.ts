@@ -14,6 +14,7 @@ export class PaseoToolInputError extends Error {
 }
 
 export interface PaseoToolExecutionContext {
+  execution?: import("@getpaseo/protocol/messages").AgentExecution | null;
   signal?: AbortSignal;
   sendUpdate?: (update: PaseoToolResult) => void;
 }

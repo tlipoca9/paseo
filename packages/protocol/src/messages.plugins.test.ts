@@ -412,3 +412,57 @@ describe("plugin subscription protocol", () => {
     expect(StatusMessageSchema.parse(status)).toMatchObject(status);
   });
 });
+
+describe("plugin delivery scope operations", () => {
+  it("requires operation-specific parameters at the wire boundary", () => {
+    expect(
+      SessionInboundMessageSchema.safeParse({
+        type: "delivery.scope.request",
+        action: "revoke",
+        requestId: "missing-scope",
+      }).success,
+    ).toBe(false);
+    const execution = { agentId: "agent", runtimeId: "runtime", runId: "run", turnId: "turn" };
+    for (const operation of ["get", "revoke", "bind_execution"]) {
+      expect(
+        SessionInboundMessageSchema.safeParse({
+          type: `delivery.scope.${operation}.request`,
+          requestId: "missing-scope",
+          execution,
+        }).success,
+      ).toBe(false);
+    }
+    expect(
+      SessionInboundMessageSchema.safeParse({
+        type: "delivery.scope.bind_execution.request",
+        scopeId: "scope",
+        requestId: "missing-execution",
+      }).success,
+    ).toBe(false);
+    for (const request of [
+      { type: "delivery.scope.create.request", requestId: "create" },
+      { type: "delivery.scope.get.request", requestId: "get", scopeId: "scope" },
+      { type: "delivery.scope.revoke.request", requestId: "revoke", scopeId: "scope" },
+      {
+        type: "delivery.scope.bind_execution.request",
+        requestId: "bind",
+        scopeId: "scope",
+        execution,
+      },
+    ]) {
+      expect(SessionInboundMessageSchema.parse(request)).toEqual(request);
+      const response = {
+        type: request.type.replace(".request", ".response"),
+        payload: { requestId: request.requestId, scope: { id: "scope", status: "active" } },
+      };
+      expect(SessionOutboundMessageSchema.parse(response)).toEqual(response);
+    }
+    const receipt = {
+      type: "agent.message.get_receipt.request",
+      requestId: "receipt",
+      agentId: "agent",
+      messageId: "message",
+    };
+    expect(SessionInboundMessageSchema.parse(receipt)).toEqual(receipt);
+  });
+});

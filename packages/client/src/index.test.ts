@@ -266,6 +266,7 @@ test("createPaseoApi borrows daemon capabilities without exposing connection own
   expect(Object.keys(paseo).sort()).toEqual([
     "agents",
     "config",
+    "deliveryScopes",
     "dispose",
     "hosts",
     "observeEvents",
@@ -2195,4 +2196,54 @@ test("background stop rejects when the host does not advertise the operation", a
       .backgroundWork.stop({ ...SHELL_ITEM, canStop: true, stopToken: "generation" }),
   ).rejects.toThrow("Update the host");
   await client.close();
+});
+
+test("execution control requires the host capability before sending an RPC", async () => {
+  const { client, ws } = await connectClient({});
+  try {
+    const agent = client.agents.ref("agent-1");
+    const sent = ws.sent.length;
+    await expect(agent.captureExecution()).rejects.toThrow("Update the host");
+    await expect(
+      agent.stopExecution({
+        agentId: agent.id,
+        runtimeId: "runtime",
+        runId: "run",
+        turnId: "turn",
+      }),
+    ).rejects.toThrow("Update the host");
+    expect(ws.sent.length).toBe(sent);
+  } finally {
+    await client.dispose();
+  }
+});
+
+test("revocable delivery scopes require host capability without changing ordinary sends", async () => {
+  const { client, ws } = await connectClient({});
+  try {
+    const before = ws.sent.length;
+    await expect(client.deliveryScopes.create()).rejects.toThrow(/revocable delivery scopes/);
+    await expect(client.deliveryScopes.get("scope")).rejects.toThrow(/revocable delivery scopes/);
+    await expect(
+      client.agents.ref("agent").send("automatic", { deliveryScopeId: "scope" }),
+    ).rejects.toThrow(/revocable delivery scopes/);
+    expect(ws.sent.length).toBe(before);
+    const sent = client.agents.ref("agent").send("ordinary");
+    const request = parseSentSessionMessage(ws.sent.at(-1));
+    expect(request).toMatchObject({ type: "send_agent_message_request", text: "ordinary" });
+    ws.message(
+      sessionMessage({
+        type: "send_agent_message_response",
+        payload: {
+          requestId: request.requestId,
+          agentId: "agent",
+          accepted: true,
+          error: null,
+        },
+      }),
+    );
+    await expect(sent).resolves.toBeUndefined();
+  } finally {
+    await client.close();
+  }
 });

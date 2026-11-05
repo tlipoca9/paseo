@@ -1,22 +1,34 @@
 import type { AgentStorage, StoredAgentRecord } from "../agent-storage.js";
+interface RecoveryDispatch {
+  agentId: string;
+  prompt: string;
+  runId: string | null;
+}
 interface Dependencies {
   storage: AgentStorage;
   settings(): { enabled: boolean; prompt: string };
   eligible(record: StoredAgentRecord): Promise<boolean>;
-  dispatch(agentId: string, prompt: string): Promise<unknown>;
+  dispatch(input: RecoveryDispatch): Promise<unknown>;
   report(agentId: string, error: unknown): void;
 }
 export function createRestartRecovery(deps: Dependencies) {
   // Candidates are chosen at startup; each settles once its resume was sent or abandoned.
   const resuming = new Map<string, { promise: Promise<void>; resolve(): void }>();
   const eligible = async (record: StoredAgentRecord) =>
-    !record.archivedAt && !record.internal && !record.owner && (await deps.eligible(record));
+    !record.archivedAt &&
+    !record.internal &&
+    !record.owner &&
+    !record.executionRecovery?.scope &&
+    (await deps.eligible(record));
   async function resume(agentId: string) {
-    const record = await deps.storage.get(agentId);
-    if (!record?.resumeOnStartup) return;
-    await deps.storage.upsert({ ...record, resumeOnStartup: false });
+    const record = await deps.storage.consumeRestartRecovery(agentId);
+    if (!record) return;
     if (!deps.settings().enabled || !(await eligible(record))) return;
-    await deps.dispatch(agentId, deps.settings().prompt);
+    await deps.dispatch({
+      agentId,
+      prompt: deps.settings().prompt,
+      runId: record.executionRecovery?.runId ?? null,
+    });
   }
   return {
     /** Choose candidates before anything else reads or repairs persisted running status. */

@@ -1,3 +1,4 @@
+import { DeliveryScopes } from "./agent/delivery-scopes.js";
 import {
   ChunkedTransport,
   ChunkedTransportProtocolError,
@@ -503,6 +504,7 @@ interface PluginSessionConnection extends SessionConnectionBase {
 type SessionConnection = ReconnectableSessionConnection | PluginSessionConnection;
 
 interface SocketSessionOptions {
+  trustedPluginId?: string;
   sourceId?: string;
   clientId: string;
   appVersion: string | null;
@@ -585,6 +587,7 @@ export class VoiceAssistantWebSocketServer {
   private readonly agentStorage: AgentStorage;
   private readonly messageReceipts: MessageReceipts;
   readonly agentMessages: AgentMessageDelivery;
+  private readonly deliveryScopes = new DeliveryScopes();
   private readonly creationService: CreationService;
   private readonly projectRegistry: ProjectRegistry;
   private readonly workspaceRegistry: WorkspaceRegistry;
@@ -765,13 +768,19 @@ export class VoiceAssistantWebSocketServer {
           agentStorage,
           agentId: batch.recipientId,
           prompt: batch.prompt,
+          expectedExecution: batch.expectedExecution,
+          onExecutionGuided: batch.onExecutionGuided,
           activeTurnBehavior: batch.activeTurnBehavior,
           idleOnly: batch.idleOnly,
           admit: batch.admit,
           sessionMode: batch.sessionMode,
           clearPendingPermissions: batch.clearPendingPermissions,
           unarchive: batch.unarchive,
-          runOptions: { clientMessageId: batch.messageIds[0] },
+          runOptions: {
+            clientMessageId: batch.messageIds[0],
+            deliveryScope: batch.deliveryScope,
+            inputOrigin: batch.inputOrigin,
+          },
           logger: this.logger,
         });
         if (dispatch.disposition === "turn_started")
@@ -1205,6 +1214,7 @@ export class VoiceAssistantWebSocketServer {
 
   public async close(): Promise<void> {
     this.prepareForShutdown();
+    await this.deliveryScopes.close();
     await this.agentMessages.close();
     await this.connectedHosts.close();
     this.unsubscribeSpeechReadiness?.();
@@ -1607,6 +1617,7 @@ export class VoiceAssistantWebSocketServer {
     let connection: SessionConnection | null = null;
 
     const session = this.createSocketSession({
+      trustedPluginId: lifecycle.kind === "ephemeral-plugin" ? lifecycle.pluginId : undefined,
       clientId,
       appVersion,
       clientCapabilities,
@@ -1725,6 +1736,8 @@ export class VoiceAssistantWebSocketServer {
       agentStorage: this.agentStorage,
       messageReceipts: this.messageReceipts,
       agentMessages: this.agentMessages,
+      deliveryScopes: this.deliveryScopes,
+      trustedPluginId: options.trustedPluginId,
       creationService: this.creationService,
       projectRegistry: this.projectRegistry,
       workspaceRegistry: this.workspaceRegistry,
@@ -2150,6 +2163,8 @@ export class VoiceAssistantWebSocketServer {
         pluginThemes: true,
         pluginSettings: true,
         pluginTimelineItems: true,
+        agentExecutionControl: true,
+        agentMessageReceipts: true,
         // COMPAT(pluginSubscriptions): added in v0.15.0, remove gate after 2027-05-02.
         pluginSubscriptions: true,
         // COMPAT(skillManagement): added in v0.4.0, remove gate after 2027-08-16.
@@ -2281,6 +2296,8 @@ export class VoiceAssistantWebSocketServer {
         agentProfiles: true,
         // COMPAT(agentConfigApply): added in v0.3.2, remove gate after 2027-02-11.
         agentConfigApply: true,
+        deliveryScopes: true,
+        deliveryScopeRecovery: true,
       },
     };
   }
