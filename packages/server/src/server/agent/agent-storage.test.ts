@@ -150,6 +150,74 @@ describe("AgentStorage", () => {
     rmSync(tmpDir, { recursive: true, force: true });
   });
 
+  test("resource attachment snapshots survive reopening, archive and state writes, and reject conflicting retries", async () => {
+    const agent = createManagedAgent();
+    await storage.applySnapshot(agent);
+    const attachment = {
+      type: "text" as const,
+      mimeType: "text/plain",
+      text: "完整正文🙂".repeat(80000),
+      localResource: {
+        provider: "messages",
+        providerLabel: "Messages",
+        sourceId: "messages",
+        resourceType: "message",
+        id: "9223372036854775807",
+        identifier: "MSG-1",
+        title: "One",
+        source: { scope: "account-a", ref: "opaque/9223372036854775807", label: "Product" },
+      },
+    };
+    const input = {
+      text: "Question",
+      attachments: [attachment, { ...attachment, text: "Second" }],
+    };
+    const messageId = "../../opaque-submission";
+    await storage.saveResourceSnapshot(agent.id, messageId, input);
+    await storage.saveResourceSnapshot(agent.id, messageId, input);
+    await expect(
+      storage.saveResourceSnapshot(agent.id, messageId, { ...input, text: "Different" }),
+    ).rejects.toThrow("conflict");
+    await storage.upsert({ ...(await storage.get(agent.id))!, archivedAt: "2026-01-01T00:00:00Z" });
+    await storage.applySnapshot(agent);
+    const reopened = new AgentStorage(storagePath, logger);
+    expect(await reopened.getResourceSnapshotProjection(agent.id, messageId)).toMatchObject({
+      text: "Question",
+      resourceSnapshot: { count: 2 },
+    });
+    let offset = 0;
+    const chunks: Buffer[] = [];
+    let digest = "";
+    let totalBytes = 0;
+    do {
+      const chunk = await reopened.readResourceSnapshotChunk(agent.id, messageId, 0, offset, 65536);
+      expect(chunk.offset).toBe(offset);
+      expect(chunk.encoding).toBe("base64");
+      const bytes = Buffer.from(chunk.data, "base64");
+      expect(bytes.length).toBeLessThanOrEqual(65536);
+      chunks.push(bytes);
+      if (digest) expect(chunk.sha256).toBe(digest);
+      digest = chunk.sha256;
+      totalBytes = chunk.totalBytes;
+      offset = chunk.nextOffset;
+    } while (offset < totalBytes);
+    expect(JSON.parse(Buffer.concat(chunks).toString("utf8"))).toEqual(attachment);
+    expect(Buffer.concat(chunks).length).toBe(totalBytes);
+    expect((await reopened.get(agent.id))?.archivedAt).toBeTruthy();
+    await expect(
+      reopened.readResourceSnapshotChunk("another-agent", messageId, 0, 0, 20),
+    ).rejects.toThrow();
+    await expect(
+      reopened.readResourceSnapshotChunk(agent.id, messageId, 2, 0, 20),
+    ).rejects.toThrow();
+    await expect(
+      reopened.readResourceSnapshotChunk(agent.id, messageId, 0, 0, 65537),
+    ).rejects.toThrow();
+    await reopened.remove(agent.id);
+    const deleted = new AgentStorage(storagePath, logger);
+    expect(await deleted.getResourceSnapshotProjection(agent.id, messageId)).toBeNull();
+  });
+
   test("workspace and active queries follow updates, removal, and reload", async () => {
     const base = {
       provider: "codex",

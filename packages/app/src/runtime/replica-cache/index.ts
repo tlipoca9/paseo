@@ -1,3 +1,4 @@
+import { ResourceSnapshotReferenceSchema } from "@getpaseo/protocol/messages";
 import { findMountedWindowStart } from "@/agent-stream/history-window";
 import { z } from "zod";
 import {
@@ -117,6 +118,7 @@ const StoredTimelineItemSchema = z.discriminatedUnion("kind", [
     ...TimelineItemBaseShape,
     kind: z.literal("user_message"),
     clientMessageId: z.string().optional(),
+    resourceSnapshot: ResourceSnapshotReferenceSchema.optional(),
     messageId: z.string().optional(),
     text: z.string(),
   }),
@@ -449,6 +451,7 @@ function serializeTimelineItem(item: StreamItem): StoredTimelineItem | null {
         ...base,
         kind: item.kind,
         ...(item.clientMessageId ? { clientMessageId: item.clientMessageId } : {}),
+        ...(item.resourceSnapshot ? { resourceSnapshot: item.resourceSnapshot } : {}),
         ...(item.messageId ? { messageId: item.messageId } : {}),
         text: item.text,
       };
@@ -539,6 +542,7 @@ function deserializeBuiltinTimelineItem(
         ...base,
         kind: item.kind,
         ...(item.clientMessageId ? { clientMessageId: item.clientMessageId } : {}),
+        ...(item.resourceSnapshot ? { resourceSnapshot: item.resourceSnapshot } : {}),
         ...(item.messageId ? { messageId: item.messageId } : {}),
         text: item.text,
       };

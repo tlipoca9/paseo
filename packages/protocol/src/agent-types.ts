@@ -374,12 +374,25 @@ export interface AgentTaskItem {
 
 export type AgentInputOrigin = { kind: "human" } | { kind: "plugin"; pluginId: string };
 
+export interface ResourceSnapshotReference {
+  count: number;
+  items: Array<{
+    index: number;
+    title: string;
+    sourceLabel: string;
+    excerpt: string;
+    kind: "local" | "external";
+    url?: string;
+  }>;
+}
+
 export type AgentTimelineItem =
   | {
       type: "user_message";
       text: string;
       messageId?: string;
       clientMessageId?: string;
+      resourceSnapshot?: ResourceSnapshotReference;
       origin?: AgentInputOrigin;
     }
   | { type: "assistant_message"; text: string; messageId?: string }

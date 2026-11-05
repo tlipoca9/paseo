@@ -1718,6 +1718,69 @@ test.each([undefined, false, true])(
   },
 );
 
+test("resource attachment chunk RPC preserves submission identity and reports snapshot failures", async () => {
+  const transport = createMockTransport();
+  const client = new DaemonClient({
+    url: "ws://test",
+    clientId: "resource",
+    reconnect: { enabled: false },
+    transportFactory: () => transport.transport,
+  });
+  clients.push(client);
+  const connected = client.connect();
+  transport.triggerOpen({ features: { pluginResourceAttachments: true } });
+  await connected;
+  const request = {
+    agentId: "agent-1",
+    clientMessageId: "opaque-submission",
+    index: 1,
+    offset: 17,
+    limit: 31,
+  };
+  const pending = client.readResourceSnapshotChunk(request);
+  const frame = parseSentFrame(transport.sent.at(-1));
+  expect(frame).toMatchObject({ type: "agent.resource_snapshot.read.request", ...request });
+  const chunk = {
+    offset: 17,
+    nextOffset: 48,
+    totalBytes: 100,
+    sha256: "digest",
+    encoding: "base64",
+    data: "YQ==",
+  };
+  transport.triggerMessage(
+    wrapSessionMessage({
+      type: "agent.resource_snapshot.read.response",
+      payload: {
+        requestId: frame.requestId,
+        agentId: request.agentId,
+        clientMessageId: request.clientMessageId,
+        index: 1,
+        chunk,
+        error: null,
+      },
+    }),
+  );
+  await expect(pending).resolves.toEqual(chunk);
+  const failure = client.readResourceSnapshotChunk(request);
+  const rejected = expect(failure).rejects.toThrow("Snapshot missing");
+  const failedFrame = parseSentFrame(transport.sent.at(-1));
+  transport.triggerMessage(
+    wrapSessionMessage({
+      type: "agent.resource_snapshot.read.response",
+      payload: {
+        requestId: failedFrame.requestId,
+        agentId: request.agentId,
+        clientMessageId: request.clientMessageId,
+        index: 1,
+        chunk: null,
+        error: "Snapshot missing",
+      },
+    }),
+  );
+  await rejected;
+});
+
 test("honors explicit fetchAgentTimeline timeout below the session RPC default", async () => {
   useHeartbeatClock();
   const logger = createMockLogger();

@@ -625,6 +625,8 @@ function withoutInputOrigin(item: AgentTimelineItem): AgentTimelineItem {
 }
 
 function limitAgentStreamEventContent(event: AgentStreamEvent): AgentStreamEvent {
+  // User envelopes must be decoded before clipping, or replay loses their submission identity.
+  if (event.type === "timeline" && event.item.type === "user_message") return event;
   return event.type === "timeline"
     ? { ...event, item: limitAgentTimelineItemContent(withoutInputOrigin(event.item)) }
     : event;
@@ -745,10 +747,13 @@ function buildExplicitTimelineSeedForRegister(
   };
 }
 
-function buildImportedTimelineRows(entries: readonly ImportedTimelineEntry[]): AgentTimelineRow[] {
+async function buildImportedTimelineRows(
+  entries: readonly ImportedTimelineEntry[],
+  project: (item: AgentTimelineItem) => Promise<AgentTimelineItem[]>,
+): Promise<AgentTimelineRow[]> {
   const rows: AgentTimelineRow[] = [];
   for (const entry of entries) {
-    for (const item of projectAgentMessages(entry.item)) {
+    for (const item of await project(entry.item)) {
       rows.push({
         seq: rows.length + 1,
         timestamp: entry.timestamp ?? new Date().toISOString(),
@@ -1981,7 +1986,9 @@ export class AgentManager {
       const importedConfig = await this.normalizeConfig(
         stripInternalPaseoMcpServer(imported.config),
       );
-      const timelineRows = buildImportedTimelineRows(imported.timeline);
+      const timelineRows = await buildImportedTimelineRows(imported.timeline, (item) =>
+        this.projectResourceMessages(resolvedAgentId, item),
+      );
       const initialTitle = resolveImportedAgentTitle(importedConfig, timelineRows);
 
       handedToRegistration = true;
@@ -3093,7 +3100,7 @@ export class AgentManager {
     }
     this.touchUpdatedAt(agent);
     if (options?.clientMessageId) {
-      this.recordSubmittedPrompt(agent, prompt, options.clientMessageId, "accepted", {
+      await this.recordSubmittedPrompt(agent, prompt, options.clientMessageId, "accepted", {
         inputOrigin: options.inputOrigin,
       });
       this.emitState(agent);
@@ -3218,7 +3225,7 @@ export class AgentManager {
       try {
         // A terminal rejection belongs after the submitted prompt even though no provider turn exists.
         if (options?.clientMessageId) {
-          this.recordSubmittedPrompt(agent, prompt, options.clientMessageId, "rejected", {
+          await this.recordSubmittedPrompt(agent, prompt, options.clientMessageId, "rejected", {
             inputOrigin: options.inputOrigin,
             messageId: options.clientMessageId,
           });
@@ -3400,7 +3407,7 @@ export class AgentManager {
           )
         : undefined;
       if (options?.clientMessageId) {
-        this.recordSubmittedPrompt(agent, prompt, options.clientMessageId, "accepted", {
+        await this.recordSubmittedPrompt(agent, prompt, options.clientMessageId, "accepted", {
           inputOrigin: options.inputOrigin,
           messageId: options.clientMessageId,
           turnId,
@@ -3747,7 +3754,7 @@ export class AgentManager {
     const execution = identity ? this.executions.get(identity.runId) : undefined;
     if (execution && identity?.turnId === expectedTurnId)
       (execution.steeredMessageIds ??= new Set()).add(clientMessageId);
-    this.recordSubmittedPrompt(agent, prompt, clientMessageId, "accepted", {
+    await this.recordSubmittedPrompt(agent, prompt, clientMessageId, "accepted", {
       inputOrigin,
       messageId: clientMessageId,
       turnId: expectedTurnId,
@@ -4427,7 +4434,9 @@ export class AgentManager {
           // Legacy/imported chats need their existing history before startup rows.
           await this.primeTimelineFromLegacyProviderHistory(managed, false, startupHistory);
         } else {
-          for (const entry of buildImportedTimelineRows(session.initialTimeline)) {
+          for (const entry of await buildImportedTimelineRows(session.initialTimeline, (item) =>
+            this.projectResourceMessages(managed.id, item),
+          )) {
             this.recordTimeline(managed.id, entry.item, { timestamp: entry.timestamp });
           }
         }
@@ -4948,7 +4957,7 @@ export class AgentManager {
     for await (const rawEvent of agent.session.streamHistory()) {
       const event = limitAgentStreamEventContent(rawEvent);
       if (event.type === "timeline") {
-        for (const item of projectAgentMessages(event.item)) {
+        for (const item of await this.projectResourceMessages(agent.id, event.item)) {
           historyEvents.push({ ...event, item });
         }
       } else if (event.type === "provider_subagent") {
@@ -5015,7 +5024,7 @@ export class AgentManager {
         if (event.type !== "timeline") {
           continue;
         }
-        for (const item of projectAgentMessages(event.item)) {
+        for (const item of await this.projectResourceMessages(agent.id, event.item)) {
           historyEvents.push({ ...event, item });
         }
       }
@@ -5351,7 +5360,7 @@ export class AgentManager {
 
     flags.shouldDispatchEvent = false;
     flags.shouldNotifyWaiters = false;
-    for (const item of projectAgentMessages(event.item)) {
+    for (const item of await this.projectResourceMessages(agent.id, event.item)) {
       if (
         item.type === "user_message" &&
         item.clientMessageId &&
@@ -5615,7 +5624,26 @@ export class AgentManager {
     return event;
   }
 
-  private recordSubmittedPrompt(
+  private async projectResourceMessages(
+    agentId: string,
+    raw: AgentTimelineItem,
+  ): Promise<AgentTimelineItem[]> {
+    const items: AgentTimelineItem[] = [];
+    for (const projected of projectAgentMessages(raw)) {
+      const snapshot =
+        projected.type === "user_message" && projected.clientMessageId
+          ? await this.registry?.getResourceSnapshotProjection(agentId, projected.clientMessageId)
+          : null;
+      items.push(
+        limitAgentTimelineItemContent(
+          withoutInputOrigin(snapshot ? { ...projected, ...snapshot } : projected),
+        ),
+      );
+    }
+    return items;
+  }
+
+  private async recordSubmittedPrompt(
     agent: ActiveManagedAgent,
     prompt: AgentPromptInput,
     clientMessageId: string,
@@ -5626,8 +5654,8 @@ export class AgentManager {
       turnId?: string;
       inputOrigin?: AgentRunOptions["inputOrigin"];
     },
-  ): void {
-    const items = projectAgentMessages({
+  ): Promise<void> {
+    const items = await this.projectResourceMessages(agent.id, {
       type: "user_message",
       text: submittedPromptText(prompt),
       clientMessageId,

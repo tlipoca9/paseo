@@ -1,3 +1,4 @@
+import { pluginAttachments } from "./plugin-attachments";
 import { en, type TranslationResources } from "./en";
 import { pluginSettings } from "./plugin-settings";
 
@@ -117,6 +118,7 @@ export const ru: TranslationResources = {
     },
   },
   composer: {
+    pluginAttachments: pluginAttachments,
     placeholders: {
       desktop: "Напишите агенту сообщение, отметьте @files или используйте /commands и /skills.",
       mobile: "Сообщение,@files,/commands",

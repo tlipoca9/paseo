@@ -1,3 +1,4 @@
+import { pluginAttachments } from "./plugin-attachments";
 export const en = {
   paneFind: {
     connectionFailure: "Could not search this chat. Check the host connection and retry.",
@@ -112,6 +113,7 @@ export const en = {
     },
   },
   composer: {
+    pluginAttachments: pluginAttachments,
     placeholders: {
       desktop: "Message the agent, tag @files, or use /commands and /skills",
       mobile: "Message, @files, /commands",

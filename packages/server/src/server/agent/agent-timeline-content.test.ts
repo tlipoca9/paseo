@@ -9,6 +9,32 @@ function serializedBytes(item: AgentTimelineItem): number {
 }
 
 describe("agent timeline content", () => {
+  test("resource attachment descriptions stay bounded and addressable while a large question is clipped", () => {
+    const item = limitAgentTimelineItemContent({
+      type: "user_message",
+      text: "question".repeat(200000),
+      clientMessageId: "opaque-submission",
+      resourceSnapshot: {
+        count: 20,
+        items: Array.from({ length: 20 }, (_, index) => ({
+          index,
+          title: "Title🙂".repeat(1000),
+          sourceLabel: "Conversation • Sender • 2026-11-06",
+          excerpt: "Body".repeat(1000),
+          kind: "local" as const,
+        })),
+      },
+    });
+    expect(item.type).toBe("user_message");
+    if (item.type !== "user_message") return;
+    expect(item.clientMessageId).toBe("opaque-submission");
+    expect(item.resourceSnapshot?.count).toBe(20);
+    expect(item.resourceSnapshot?.items).toHaveLength(8);
+    expect(item.resourceSnapshot?.items[7].index).toBe(7);
+    expect([...item.resourceSnapshot!.items[0].title].length).toBeLessThanOrEqual(160);
+    expect(serializedBytes(item)).toBeLessThan(256 * 1024);
+    expect(limitAgentTimelineItemContent(item)).toEqual(item);
+  });
   test("returns an item within budget unchanged", () => {
     const item: AgentTimelineItem = {
       type: "tool_call",

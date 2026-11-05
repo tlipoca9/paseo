@@ -714,12 +714,27 @@ const ToolCallTimelineItemPayloadSchema: z.ZodType<ToolCallTimelineItem, unknown
 
 // zod-aot 0.20.4 miscompiles this as a nested discriminated union by omitting
 // the inner tool_call branch from the generated outer dispatch.
+export const ResourceSnapshotReferenceSchema = z.object({
+  count: z.number().int().positive(),
+  items: z.array(
+    z.object({
+      index: z.number().int().nonnegative(),
+      title: z.string(),
+      sourceLabel: z.string(),
+      excerpt: z.string(),
+      kind: z.enum(["local", "external"]),
+      url: z.string().optional(),
+    }),
+  ),
+});
+
 export const AgentTimelineItemPayloadSchema: z.ZodType<AgentTimelineItem, unknown> = z.union([
   z.object({
     type: z.literal("user_message"),
     text: z.string(),
     messageId: z.string().optional(),
     clientMessageId: z.string().optional(),
+    resourceSnapshot: ResourceSnapshotReferenceSchema.optional(),
     origin: z
       .discriminatedUnion("kind", [
         z.object({ kind: z.literal("human") }),
@@ -1171,6 +1186,19 @@ export const ExternalResourceAttachmentMetadataSchema = z.object({
   url: z.string(),
 });
 
+export const ResourceAttachmentSourceSchema = z.object({
+  scope: z.string().min(1),
+  ref: z.string().min(1),
+  label: z.string(),
+});
+
+export const LocalResourceAttachmentMetadataSchema = ExternalResourceAttachmentMetadataSchema.omit({
+  url: true,
+}).extend({
+  sourceId: z.string(),
+  source: ResourceAttachmentSourceSchema,
+});
+
 export const TextAttachmentSchema = z
   .object({
     type: z.literal("text"),
@@ -1179,6 +1207,7 @@ export const TextAttachmentSchema = z
     title: z.string().nullable().optional(),
     text: z.string(),
     externalResource: ExternalResourceAttachmentMetadataSchema.optional(),
+    localResource: LocalResourceAttachmentMetadataSchema.optional(),
   })
   .transform(({ contextKind, ...attachment }) => ({
     ...attachment,
@@ -1980,6 +2009,37 @@ export const FetchAgentTimelineRequestMessageSchema = z.object({
   projection: z.enum(["projected", "canonical"]).optional(),
   // Allow the client to merge this bounded page outside its contiguous loaded range.
   mergeWindow: z.boolean().optional(),
+});
+
+export const ResourceSnapshotReadRequestSchema = z.object({
+  type: z.literal("agent.resource_snapshot.read.request"),
+  requestId: z.string(),
+  agentId: z.string(),
+  clientMessageId: z.string(),
+  index: z.number().int().nonnegative(),
+  offset: z.number().int().nonnegative(),
+  limit: z.number().int().min(1).max(65536),
+});
+
+export const ResourceSnapshotChunkSchema = z.object({
+  offset: z.number().int().nonnegative(),
+  nextOffset: z.number().int().positive(),
+  totalBytes: z.number().int().positive(),
+  sha256: z.string(),
+  encoding: z.literal("base64"),
+  data: z.string(),
+});
+
+export const ResourceSnapshotReadResponseSchema = z.object({
+  type: z.literal("agent.resource_snapshot.read.response"),
+  payload: z.object({
+    requestId: z.string(),
+    agentId: z.string(),
+    clientMessageId: z.string(),
+    index: z.number().int().nonnegative(),
+    chunk: ResourceSnapshotChunkSchema.nullable(),
+    error: z.string().nullable(),
+  }),
 });
 
 export const AgentTimelineSearchRequestMessageSchema = z.object({
@@ -3549,6 +3609,7 @@ export const SessionInboundMessageSchema = z.discriminatedUnion("type", [
   RestartServerRequestMessageSchema,
   DaemonUpdateRequestMessageSchema,
   FetchAgentTimelineRequestMessageSchema,
+  ResourceSnapshotReadRequestSchema,
   AgentTimelineSearchRequestMessageSchema,
   AgentTimelineListPromptsRequestMessageSchema,
   ProviderSubagentListRequestMessageSchema,
@@ -3919,6 +3980,7 @@ export const ServerInfoStatusPayloadSchema = z
         pluginThemes: z.boolean().optional(),
         pluginSettings: z.boolean().optional(),
         pluginTimelineItems: z.boolean().optional(),
+        pluginResourceAttachments: z.boolean().optional(),
         agentExecutionControl: z.boolean().optional(),
         agentMessageReceipts: z.boolean().optional(),
         // COMPAT(pluginSubscriptions): added in v0.15.0, remove gate after 2027-05-02.
@@ -7317,6 +7379,7 @@ export const SessionOutboundMessageSchema = z.discriminatedUnion("type", [
   ArchiveWorkspaceResponseMessageSchema,
   FetchAgentResponseMessageSchema,
   FetchAgentTimelineResponseMessageSchema,
+  ResourceSnapshotReadResponseSchema,
   AgentTimelineReplacementMessageSchema,
   AgentTimelineSearchResponseMessageSchema,
   AgentTimelineListPromptsResponseMessageSchema,

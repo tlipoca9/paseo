@@ -44,7 +44,7 @@ import {
 import { OWNER_PERMISSIONS, type DaemonPermission } from "./authorization/index.js";
 import { DownloadTokenStore } from "./file-download/token-store.js";
 import { StructuredAgentFallbackError } from "./agent/agent-response-loop.js";
-import type { StoredAgentRecord } from "./agent/agent-storage.js";
+import { AgentStorage, type StoredAgentRecord } from "./agent/agent-storage.js";
 import type { AgentManagerEvent } from "./agent/agent-manager.js";
 import type { ProviderSnapshotManager } from "./agent/provider-snapshot-manager.js";
 import { WorkspaceLabelError, type WorkspaceLabelService } from "./workspace-labels/index.js";
@@ -109,6 +109,96 @@ interface SessionHandlerInternals {
   createPaseoWorktree(params: unknown): Promise<unknown>;
   handleStartWorkspaceScriptRequest(params: unknown): Promise<unknown>;
 }
+
+test("resource attachment RPC reads only the requested stored agent and submission range", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "resource-rpc-"));
+  const storage = new AgentStorage(dir, pino({ level: "silent" }));
+  try {
+    await storage.upsert({
+      id: "agent-a",
+      provider: "codex",
+      cwd: dir,
+      labels: {},
+      lastStatus: "idle",
+      createdAt: "2026-01-01T00:00:00Z",
+      updatedAt: "2026-01-01T00:00:00Z",
+    });
+    await storage.saveResourceSnapshot("agent-a", "submit-1", {
+      text: "Question",
+      attachments: [
+        {
+          type: "text",
+          mimeType: "text/plain",
+          text: "Long 多字节🙂".repeat(10000),
+          localResource: {
+            provider: "test",
+            providerLabel: "Test",
+            sourceId: "messages",
+            resourceType: "message",
+            id: "9223372036854775807",
+            identifier: "MSG-1",
+            title: "One",
+            source: { scope: "a", ref: "opaque", label: "Product" },
+          },
+        },
+      ],
+    });
+    const messages: SessionOutboundMessage[] = [];
+    const session = createSessionForTest({
+      messages,
+      agentStorage: { readResourceSnapshotChunk: storage.readResourceSnapshotChunk.bind(storage) },
+    });
+    const request = {
+      type: "agent.resource_snapshot.read.request" as const,
+      requestId: "resource-1",
+      agentId: "agent-a",
+      clientMessageId: "submit-1",
+      index: 0,
+      offset: 3,
+      limit: 65536,
+    };
+    await session.handleMessage(request);
+    expect(messages).toContainEqual(
+      expect.objectContaining({
+        type: "agent.resource_snapshot.read.response",
+        payload: expect.objectContaining({
+          agentId: "agent-a",
+          clientMessageId: "submit-1",
+          index: 0,
+          error: null,
+          chunk: expect.objectContaining({ offset: 3, nextOffset: 65539, encoding: "base64" }),
+        }),
+      }),
+    );
+    await session.handleMessage({ ...request, requestId: "resource-2", agentId: "agent-b" });
+    expect(messages).toContainEqual(
+      expect.objectContaining({
+        type: "agent.resource_snapshot.read.response",
+        payload: expect.objectContaining({
+          requestId: "resource-2",
+          chunk: null,
+          error: expect.any(String),
+        }),
+      }),
+    );
+    rmSync(join(dir, "resource-snapshots"), { recursive: true });
+    writeFileSync(join(dir, "resource-snapshots"), "damaged storage");
+    messages.length = 0;
+    await session.handleMessage({ ...request, requestId: "resource-damaged" });
+    expect(messages).toContainEqual(
+      expect.objectContaining({
+        type: "agent.resource_snapshot.read.response",
+        payload: expect.objectContaining({
+          chunk: null,
+          error: "Could not read the saved resource attachment.",
+        }),
+      }),
+    );
+    expect(JSON.stringify(messages)).not.toContain(dir);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
 
 function asSessionInternals(session: Session): SessionHandlerInternals {
   return asSessionInternalsHelper<SessionHandlerInternals>(session);

@@ -433,6 +433,30 @@ describe("ReplicaCache", () => {
     expect(storage.rows.size).toBe(0);
   });
 
+  it("resource attachment references survive a cold replica cache read without fetching full text", async () => {
+    const storage = new MemoryStorage();
+    const writer = createCache(storage);
+    const item: StreamItem = {
+      kind: "user_message",
+      id: "message-1",
+      messageId: "provider-id",
+      clientMessageId: "submission-id",
+      timestamp: new Date(1),
+      timelineCursor: { epoch: "epoch-1", seq: 12 },
+      text: "Question",
+      resourceSnapshot: {
+        count: 2,
+        items: [
+          { index: 0, kind: "local", title: "Message", sourceLabel: "Product", excerpt: "Summary" },
+        ],
+      },
+    };
+    const value = { ...timeline(), items: [item] };
+    writer.commitTimeline(SERVER_ID, "agent-1", value);
+    await writer.flush();
+    expect(await createCache(storage).readTimeline(SERVER_ID, "agent-1")).toEqual(value);
+  });
+
   it("round-trips explicit directory and timeline commits", async () => {
     const storage = new MemoryStorage();
     const writer = createCache(storage);

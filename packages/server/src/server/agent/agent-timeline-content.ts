@@ -1,5 +1,6 @@
 import type { AgentTimelineItem } from "./agent-sdk-types.js";
 import type { JsonValue } from "@getpaseo/protocol/agent-types";
+import type { ResourceSnapshotReference } from "@getpaseo/protocol/agent-types";
 
 export const PLUGIN_TIMELINE_DATA_MAX_BYTES = 64 * 1024;
 
@@ -127,7 +128,49 @@ function cut(value: unknown, depth: number, state: CutState): unknown {
 
 /** Returns the item itself when it fits its budget; otherwise a copy with its largest strings cut. */
 export function limitAgentTimelineItemContent(item: AgentTimelineItem): AgentTimelineItem {
+  if (item.type === "user_message" && item.resourceSnapshot) {
+    const { resourceSnapshot, ...ordinary } = item;
+    // Descriptions use their own small budget; clipping a question cannot drop an index.
+    return {
+      ...limitContent(ordinary, ITEM_BUDGET - 32 * 1024),
+      resourceSnapshot: boundResourceSnapshotReference(resourceSnapshot),
+    } as AgentTimelineItem;
+  }
   const budget = item.type === "tool_call" ? TOOL_CALL_BUDGET : ITEM_BUDGET;
+  return limitContent(item, budget);
+}
+
+export function boundResourceSnapshotReference(
+  reference: ResourceSnapshotReference,
+): ResourceSnapshotReference {
+  const short = (text: string) => {
+    const characters: string[] = [];
+    for (const character of text) {
+      if (characters.length === 160) break;
+      characters.push(character);
+    }
+    return characters.join("");
+  };
+  const bounded: ResourceSnapshotReference = {
+    count: reference.count,
+    items: reference.items.slice(0, 8).map((item) => ({
+      index: item.index,
+      title: short(item.title),
+      sourceLabel: short(item.sourceLabel),
+      excerpt: short(item.excerpt),
+      kind: item.kind,
+      url: item.url && item.url.length <= 2048 ? item.url : undefined,
+    })),
+  };
+  // Keep URLs whole. Long or unusually escaped URLs remain in the stored snapshot.
+  for (const item of bounded.items.toReversed()) {
+    if (Buffer.byteLength(JSON.stringify(bounded), "utf8") <= 32 * 1024) break;
+    delete item.url;
+  }
+  return bounded;
+}
+
+function limitContent(item: AgentTimelineItem, budget: number): AgentTimelineItem {
   const size: ItemSize = { nodeCost: 0, stringLengths: [], tooDeep: false };
   measure(item, 0, size);
   let stringTotal = 0;

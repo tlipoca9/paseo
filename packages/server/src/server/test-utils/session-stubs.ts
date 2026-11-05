@@ -45,6 +45,7 @@ export function asAgentStorage(stub: {
   [K in keyof SessionOptions["agentStorage"]]?: unknown;
 }): SessionOptions["agentStorage"] {
   return createStub<SessionOptions["agentStorage"]>({
+    getResourceSnapshotProjection: async () => null,
     listAll: async () => [],
     listActive: async function (options) {
       return (await this.listAll()).filter(

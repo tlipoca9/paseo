@@ -1,6 +1,7 @@
 import { describe, expect, test } from "vitest";
 import { z } from "zod";
 import {
+  TextAttachmentSchema,
   MutableDaemonConfigSchema,
   MutableDaemonConfigPatchSchema,
   UsageReportEntrySchema,
@@ -70,6 +71,70 @@ const LegacyAgentSnapshotPayloadSchema = AgentSnapshotPayloadSchema.extend({
 });
 
 describe("wire schema compatibility", () => {
+  test("resource attachment history references are optional for old user-message readers", () => {
+    const legacy = z.object({
+      type: z.literal("user_message"),
+      text: z.string(),
+      messageId: z.string().optional(),
+      clientMessageId: z.string().optional(),
+    });
+    const oldRow = { type: "user_message", text: "Question", clientMessageId: "submission" };
+    const row = {
+      ...oldRow,
+      resourceSnapshot: {
+        count: 1,
+        items: [
+          { index: 0, title: "Message", sourceLabel: "Product", excerpt: "Summary", kind: "local" },
+        ],
+      },
+    };
+    expect(AgentTimelineItemPayloadSchema.parse(oldRow)).toEqual(oldRow);
+    expect(legacy.parse(AgentTimelineItemPayloadSchema.parse(row))).toEqual(oldRow);
+  });
+  test("local resource metadata is optional and old text readers retain the full snapshot", () => {
+    // Text fields accepted before local resource metadata was introduced.
+    const legacy = z.object({
+      type: z.literal("text"),
+      mimeType: z.literal("text/plain"),
+      contextKind: z.string().optional(),
+      title: z.string().nullable().optional(),
+      text: z.string(),
+    });
+    const text = {
+      type: "text",
+      mimeType: "text/plain",
+      text: "Complete snapshot\nSource: Team\nReference: opaque:9223372036854775807",
+    };
+    const localResource = {
+      provider: "messages",
+      providerLabel: "Messages",
+      sourceId: "history",
+      resourceType: "message",
+      id: "9223372036854775807",
+      identifier: "Message",
+      title: "Discussion",
+      source: { scope: "account", ref: "opaque:9223372036854775807", label: "Team" },
+    };
+    expect(legacy.parse(TextAttachmentSchema.parse({ ...text, localResource }))).toEqual(text);
+    expect(TextAttachmentSchema.parse(text)).toEqual(text);
+    expect(
+      TextAttachmentSchema.safeParse({
+        ...text,
+        externalResource: { ...localResource, url: undefined },
+      }).success,
+    ).toBe(false);
+    expect(
+      ServerInfoStatusPayloadSchema.parse({
+        status: "server_info",
+        serverId: "host",
+        features: { pluginResourceAttachments: true },
+      }).features?.pluginResourceAttachments,
+    ).toBe(true);
+    expect(
+      ServerInfoStatusPayloadSchema.parse({ status: "server_info", serverId: "old-host" }).features
+        ?.pluginResourceAttachments,
+    ).toBeUndefined();
+  });
   test("hello parses with and without the project update capability", () => {
     const legacy = WSHelloMessageSchema.parse({
       type: "hello",

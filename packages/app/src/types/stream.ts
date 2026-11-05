@@ -1,3 +1,4 @@
+import type { ResourceSnapshotReference } from "@getpaseo/protocol/agent-types";
 import type { AgentMessage } from "@getpaseo/protocol/agent-message";
 import type {
   AgentProvider,
@@ -103,6 +104,7 @@ export interface UserMessageItem {
   timestamp: Date;
   images?: UserMessageImageAttachment[];
   attachments?: AgentAttachment[];
+  resourceSnapshot?: ResourceSnapshotReference;
 }
 
 export interface UserMessageInput {
@@ -115,6 +117,7 @@ export interface UserMessageInput {
   timestamp: Date;
   images?: UserMessageImageAttachment[];
   attachments?: AgentAttachment[];
+  resourceSnapshot?: ResourceSnapshotReference;
 }
 
 export function createUserMessage(input: UserMessageInput): UserMessageItem {
@@ -130,6 +133,7 @@ export function createUserMessage(input: UserMessageInput): UserMessageItem {
     ...(input.turnId ? { turnId: input.turnId } : {}),
     ...(input.timelineCursor ? { timelineCursor: input.timelineCursor } : {}),
     text: input.text,
+    ...(input.resourceSnapshot ? { resourceSnapshot: input.resourceSnapshot } : {}),
     timestamp: input.timestamp,
     ...(input.images && input.images.length > 0 ? { images: input.images } : {}),
     ...(input.attachments && input.attachments.length > 0
@@ -231,6 +235,27 @@ interface UserMessageProductionResult {
   matched: boolean;
 }
 
+function mergeUserResources(
+  incoming: UserMessageItem,
+  existing: UserMessageItem,
+  presentation: UserMessageItem,
+) {
+  return {
+    resourceSnapshot: incoming.resourceSnapshot ?? existing.resourceSnapshot,
+    attachments: incoming.resourceSnapshot
+      ? presentation.attachments?.filter(
+          (attachment) =>
+            attachment.type !== "text" ||
+            (!attachment.localResource && !attachment.externalResource),
+        )
+      : presentation.attachments,
+  };
+}
+
+function hasUserContent(hasText: boolean, snapshot: ResourceSnapshotReference | undefined) {
+  return hasText || Boolean(snapshot);
+}
+
 function produceUserMessage(
   items: StreamItem[],
   incoming: UserMessageItem,
@@ -263,6 +288,7 @@ function produceUserMessage(
     clientMessageId: incoming.clientMessageId ?? existing.clientMessageId,
     messageId: incoming.messageId ?? existing.messageId,
     timelineCursor: incoming.timelineCursor ?? existing.timelineCursor,
+    ...mergeUserResources(incoming, existing, presentation),
   });
   if (
     existing.id === merged.id &&
@@ -272,7 +298,8 @@ function produceUserMessage(
     existing.text === merged.text &&
     existing.timestamp === merged.timestamp &&
     existing.images === merged.images &&
-    existing.attachments === merged.attachments
+    existing.attachments === merged.attachments &&
+    existing.resourceSnapshot === merged.resourceSnapshot
   ) {
     return { items, index, message: existing, matched: true };
   }
@@ -900,9 +927,10 @@ function appendUserMessage(
   clientMessageId?: string,
   timelineCursor?: TimelinePosition,
   turnId?: string,
+  resourceSnapshot?: ResourceSnapshotReference,
 ): StreamItem[] {
   const { chunk, hasContent } = normalizeChunk(text);
-  if (!hasContent) {
+  if (!hasContent && !resourceSnapshot) {
     return state;
   }
 
@@ -910,6 +938,7 @@ function appendUserMessage(
   const nextItem = createUserMessage({
     id: messageId ?? createUniqueTimelineId(state, "user", chunkSeed, timestamp),
     clientMessageId,
+    resourceSnapshot,
     messageId,
     timelineCursor,
     turnId,
@@ -1523,6 +1552,7 @@ function reduceTimelineEvent(
         item.clientMessageId,
         timelineCursor,
         event.turnId,
+        item.resourceSnapshot,
       );
     case "assistant_message":
       return appendAssistantMessage(
@@ -1884,6 +1914,7 @@ function applyCanonicalUserMessageEvent(params: {
       createUniqueTimelineId([...tail, ...head], "user", normalized.chunk.trim(), timestamp),
     messageId: event.item.messageId,
     clientMessageId: event.item.clientMessageId,
+    resourceSnapshot: event.item.resourceSnapshot,
     turnId: event.turnId,
     timelineCursor,
     text: normalized.chunk,
@@ -1894,7 +1925,7 @@ function applyCanonicalUserMessageEvent(params: {
       tail,
       head,
       message: canonical,
-      insert: normalized.hasContent ? "head" : "none",
+      insert: hasUserContent(normalized.hasContent, canonical.resourceSnapshot) ? "head" : "none",
       presentation: "existing",
     });
     const reconciledTail = canonical.clientMessageId
@@ -1922,7 +1953,11 @@ function applyCanonicalUserMessageEvent(params: {
           : [],
     };
   }
-  const reconciled = placeCanonicalUserMessageAtTail(flushedTail, canonical, normalized.hasContent);
+  const reconciled = placeCanonicalUserMessageAtTail(
+    flushedTail,
+    canonical,
+    hasUserContent(normalized.hasContent, canonical.resourceSnapshot),
+  );
   const reconciledTail = canonical.clientMessageId
     ? reconcileCanonicalUserTurnMembership(
         reconciled.items,

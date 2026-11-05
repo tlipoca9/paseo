@@ -3728,6 +3728,39 @@ export class DaemonClient {
     });
   }
 
+  async readResourceSnapshotChunk(input: {
+    agentId: string;
+    clientMessageId: string;
+    index: number;
+    offset: number;
+    limit: number;
+  }) {
+    const requestId = this.createRequestId();
+    const message = SessionInboundMessageSchema.parse({
+      type: "agent.resource_snapshot.read.request",
+      requestId,
+      ...input,
+    });
+    const payload = await this.sendRequest({
+      requestId,
+      message,
+      select: (response) =>
+        response.type === "agent.resource_snapshot.read.response" &&
+        response.payload.requestId === requestId
+          ? response.payload
+          : null,
+    });
+    if (payload.error || !payload.chunk)
+      throw new Error(payload.error ?? "Resource snapshot unavailable");
+    if (
+      payload.agentId !== input.agentId ||
+      payload.clientMessageId !== input.clientMessageId ||
+      payload.index !== input.index
+    )
+      throw new Error("Resource snapshot identity mismatch");
+    return payload.chunk;
+  }
+
   async fetchAgentTimeline(
     agentId: string,
     options: FetchAgentTimelineOptions = {},

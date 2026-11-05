@@ -18,6 +18,10 @@ import { LoadingSpinner } from "@/components/ui/loading-spinner";
 import { useIsCompactFormFactor } from "@/constants/layout";
 import { isNative, isWeb } from "@/constants/platform";
 import { useRevealedText, type MarkdownPhase } from "@/hooks/use-revealed-text";
+import { PluginResourcePreview, type ResourcePreview } from "@/plugins/attachments/preview";
+import { StoredResourceAttachments } from "@/plugins/attachments/snapshot-preview";
+import type { ResourceSnapshotReference } from "@getpaseo/protocol/agent-types";
+import { openExternalUrl } from "@/utils/open-external-url";
 import { ICON_SIZE, type Theme } from "@/styles/theme";
 import { inlineUnistylesStyle } from "@/styles/unistyles-inline-style";
 import { buildToolCallPresentation } from "@/tool-calls/presentation";
@@ -96,6 +100,8 @@ interface UserMessageProps {
   serverId?: string;
   agentId?: string;
   messageId?: string;
+  clientMessageId?: string;
+  resourceSnapshot?: ResourceSnapshotReference;
   message: string;
   images?: UserMessageImageAttachment[];
   attachments?: AgentAttachment[];
@@ -395,6 +401,8 @@ export const UserMessage = memo(function UserMessage({
   serverId,
   agentId,
   messageId,
+  clientMessageId,
+  resourceSnapshot,
   message,
   images = [],
   attachments = [],
@@ -410,6 +418,8 @@ export const UserMessage = memo(function UserMessage({
   const { t } = useTranslation();
   const [isHovered, setIsHovered] = useState(false);
   const [lightboxMetadata, setLightboxMetadata] = useState<UserMessageImageAttachment | null>(null);
+  const [resourcePreview, setResourcePreview] = useState<ResourcePreview | null>(null);
+  const closeResourcePreview = useCallback(() => setResourcePreview(null), []);
   const handleLightboxClose = useCallback(() => setLightboxMetadata(null), []);
   const lightboxSource = useMemo<ImageLightboxSource | null>(
     () => (lightboxMetadata ? { type: "attachment", metadata: lightboxMetadata } : null),
@@ -497,8 +507,28 @@ export const UserMessage = memo(function UserMessage({
               <View style={attachmentPreviewContainerStyle}>
                 {attachments.map((attachment, index) => {
                   const content = getAgentAttachmentPillContent(attachment, t);
+                  let onPress: (() => void) | undefined;
+                  let testID: string | undefined;
+                  if (attachment.type === "text" && attachment.localResource) {
+                    const local = attachment.localResource;
+                    testID = "message-local-resource";
+                    onPress = () =>
+                      setResourcePreview({
+                        title: local.title,
+                        text: attachment.text,
+                        source: local.source,
+                      });
+                  } else if (attachment.type === "text" && attachment.externalResource) {
+                    const url = attachment.externalResource.url;
+                    onPress = () => {
+                      void openExternalUrl(url);
+                    };
+                  }
                   return (
                     <AttachmentFrame
+                      onPress={onPress}
+                      testID={testID}
+                      accessibilityLabel={content.title}
                       key={`${attachment.type}:${"number" in attachment ? attachment.number : index}`}
                     >
                       <AttachmentLabel
@@ -510,6 +540,16 @@ export const UserMessage = memo(function UserMessage({
                   );
                 })}
               </View>
+            ) : null}
+            {resourceSnapshot ? (
+              <StoredResourceAttachments
+                key={`${serverId}:${agentId}:${clientMessageId}`}
+                serverId={serverId}
+                agentId={agentId}
+                clientMessageId={clientMessageId}
+                reference={resourceSnapshot}
+                client={client}
+              />
             ) : null}
             {hasText ? (
               <Text selectable style={userMessageStylesheet.text} dataSet={MESSAGE_TEXT_DATASET}>
@@ -544,6 +584,7 @@ export const UserMessage = memo(function UserMessage({
         ) : null}
       </View>
       <AttachmentLightbox source={lightboxSource} onClose={handleLightboxClose} />
+      <PluginResourcePreview item={resourcePreview} onClose={closeResourcePreview} />
     </View>
   );
 });

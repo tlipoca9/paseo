@@ -20,6 +20,7 @@ import {
   type ManagedAgent,
 } from "./agent-manager.js";
 import { AgentStorage } from "./agent-storage.js";
+import { sendPromptToAgent } from "./agent-prompt.js";
 import { InMemoryAgentTimelineStore } from "./agent-timeline-store.js";
 import { limitAgentTimelineItemContent } from "./agent-timeline-content.js";
 import { toAgentPayload } from "./agent-projections.js";
@@ -11921,6 +11922,148 @@ test("provider user_message is recorded from the live stream", async () => {
   // Provider's user_message should be recorded (no canonical to dedup against)
   expect(userMessages).toHaveLength(1);
   expect(userMessages[0].text).toBe("continuation prompt");
+});
+
+test("resource attachment references survive provider echo, archive and a new manager without reviving removed history", async () => {
+  const workdir = mkdtempSync(join(tmpdir(), "resource-history-"));
+  const storagePath = join(workdir, "agents");
+  const storage = new AgentStorage(storagePath, logger);
+  const history: AgentStreamEvent[] = [];
+  class ResourceSession extends TestAgentSession {
+    override async startTurn(prompt: AgentPromptInput) {
+      const text =
+        typeof prompt === "string"
+          ? prompt
+          : prompt.flatMap((block) => (block.type === "text" ? [block.text] : [])).join("\n");
+      const event: AgentStreamEvent = {
+        type: "timeline",
+        provider: this.provider,
+        item: { type: "user_message", text, messageId: "provider-resource-1" },
+      };
+      history.push(event);
+      setTimeout(() => {
+        this.pushEvent({ type: "turn_started", provider: this.provider, turnId: "resource-turn" });
+        this.pushEvent(event);
+        this.pushEvent({
+          type: "turn_completed",
+          provider: this.provider,
+          turnId: "resource-turn",
+        });
+      }, 0);
+      return { turnId: "resource-turn" };
+    }
+    override async *streamHistory() {
+      yield* history;
+    }
+  }
+  class ResourceClient extends TestAgentClient {
+    override async createSession(config: AgentSessionConfig) {
+      return new ResourceSession(config);
+    }
+    override async resumeSession(
+      _handle: AgentPersistenceHandle,
+      config?: Partial<AgentSessionConfig>,
+    ) {
+      return new ResourceSession({ provider: "codex", cwd: config?.cwd ?? workdir });
+    }
+  }
+  const manager = new AgentManager({
+    clients: { codex: new ResourceClient() },
+    registry: storage,
+    logger,
+  });
+  let restored: AgentManager | undefined;
+  let agentId = "";
+  try {
+    const agent = await manager.createAgent({ provider: "codex", cwd: workdir }, undefined, {
+      workspaceId: undefined,
+    });
+    agentId = agent.id;
+    const fullText = "完整正文🙂<&>".repeat(70000);
+    await sendPromptToAgent({
+      agentManager: manager,
+      agentStorage: storage,
+      agentId,
+      messageId: "resource-submission",
+      logger,
+      prompt: [
+        { type: "text", text: "Original question" },
+        {
+          type: "text",
+          mimeType: "text/plain",
+          text: fullText,
+          localResource: {
+            provider: "test",
+            providerLabel: "Test",
+            sourceId: "messages",
+            resourceType: "message",
+            id: "9223372036854775807",
+            identifier: "MSG-1",
+            title: "Message",
+            source: { scope: "account", ref: "opaque-ref", label: "Product" },
+          },
+        },
+      ],
+    });
+    await vi.waitFor(() =>
+      expect(
+        manager.getTimeline(agentId).find((item) => item.type === "user_message"),
+      ).toMatchObject({
+        text: "Original question",
+        clientMessageId: "resource-submission",
+        resourceSnapshot: expect.objectContaining({ count: 1 }),
+      }),
+    );
+    await vi.waitFor(() => expect(manager.getAgent(agentId)?.lifecycle).toBe("idle"));
+    expect(
+      manager.getTimeline(agentId).filter((item) => item.type === "user_message"),
+    ).toHaveLength(1);
+    await manager.archiveAgent(agentId);
+    await storage.flush();
+    const reopened = new AgentStorage(storagePath, logger);
+    restored = new AgentManager({
+      clients: { codex: new ResourceClient() },
+      registry: reopened,
+      logger,
+    });
+    await ensureAgentLoaded(agentId, {
+      agentManager: restored,
+      agentStorage: reopened,
+      logger,
+      purpose: "history",
+    });
+    expect(restored.getTimeline(agentId).filter((item) => item.type === "user_message")).toEqual([
+      expect.objectContaining({
+        text: "Original question",
+        clientMessageId: "resource-submission",
+        resourceSnapshot: expect.objectContaining({
+          count: 1,
+          items: [
+            expect.objectContaining({
+              index: 0,
+              title: "Message",
+              sourceLabel: "Product",
+              kind: "local",
+            }),
+          ],
+        }),
+      }),
+    ]);
+    expect(
+      (await reopened.readResourceSnapshotChunk(agentId, "resource-submission", 0, 0, 65536))
+        .totalBytes,
+    ).toBeGreaterThan(256 * 1024);
+    history.length = 0;
+    await restored.reloadAgentSession(agentId, undefined, { rehydrateFromDisk: true });
+    expect(restored.getTimeline(agentId).filter((item) => item.type === "user_message")).toEqual(
+      [],
+    );
+  } finally {
+    await restored?.closeAgent(agentId).catch(() => undefined);
+    await manager.closeAgent(agentId).catch(() => undefined);
+    await storage.flush();
+    rmSync(workdir, { recursive: true, force: true });
+  }
 });
 
 test("canonical submitted prompt keeps wire identity while rewind resolves provider identity", async () => {

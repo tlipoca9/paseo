@@ -87,6 +87,13 @@ export function getAgentAttachmentPillContent(
         subtitle: `Issue #${attachment.number}`,
       };
     case "text":
+      if (attachment.localResource) {
+        return {
+          icon: attachmentFileIcon,
+          title: attachment.localResource.title,
+          subtitle: attachment.localResource.source.label,
+        };
+      }
       if (attachment.externalResource) {
         return {
           icon: attachmentGithubIssueIcon,

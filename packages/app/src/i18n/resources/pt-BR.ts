@@ -1,3 +1,4 @@
+import { pluginAttachments } from "./plugin-attachments";
 import { en, type TranslationResources } from "./en";
 import { pluginSettings } from "./plugin-settings";
 
@@ -117,6 +118,7 @@ export const ptBR: TranslationResources = {
     },
   },
   composer: {
+    pluginAttachments: pluginAttachments,
     placeholders: {
       desktop: "Envie uma mensagem ao agente, marque @files ou use /commands e /skills",
       mobile: "Mensagem, @files, /commands",

@@ -6,9 +6,60 @@ import {
   CreateAgentRequestMessageSchema,
   CreatePaseoWorktreeRequestSchema,
   SendAgentMessageRequestSchema,
+  ResourceSnapshotReadRequestSchema,
 } from "./messages.js";
 
 describe("shared messages attachments", () => {
+  it("bounds resource snapshot read ranges to safe byte offsets and 64 KiB chunks", () => {
+    const request = {
+      type: "agent.resource_snapshot.read.request",
+      requestId: "read",
+      agentId: "agent",
+      clientMessageId: "submission",
+      index: 0,
+      offset: 0,
+      limit: 65536,
+    };
+    expect(ResourceSnapshotReadRequestSchema.parse(request)).toEqual(request);
+    for (const range of [
+      { index: -1 },
+      { index: 0.5 },
+      { offset: -1 },
+      { offset: Number.MAX_SAFE_INTEGER + 1 },
+      { limit: 0 },
+      { limit: 65537 },
+    ]) {
+      expect(ResourceSnapshotReadRequestSchema.safeParse({ ...request, ...range }).success).toBe(
+        false,
+      );
+    }
+  });
+  it("preserves local resource presentation without an external URL", () => {
+    const attachment = {
+      type: "text",
+      mimeType: "text/plain",
+      text: "Selected snapshot",
+      localResource: {
+        provider: "messages",
+        providerLabel: "Messages",
+        sourceId: "history",
+        resourceType: "message",
+        id: "9223372036854775807",
+        identifier: "Message",
+        title: "Discussion",
+        source: { scope: "account-1", ref: "opaque:9223372036854775807", label: "Team · Alice" },
+      },
+    };
+    const parsed = SendAgentMessageRequestSchema.parse({
+      type: "send_agent_message_request",
+      requestId: "local-resource",
+      agentId: "agent-1",
+      text: "Explain",
+      attachments: [attachment],
+    });
+    expect(parsed.attachments).toEqual([attachment]);
+  });
+
   it("preserves an optional timeline cursor on fork-context messages", () => {
     const boundaryCursor = { epoch: "timeline-1", seq: 42 };
     const request = AgentForkContextRequestMessageSchema.parse({

@@ -2935,6 +2935,8 @@ export class Session {
     switch (msg.type) {
       case "fetch_agent_timeline_request":
         return this.handleFetchAgentTimelineRequest(msg, source);
+      case "agent.resource_snapshot.read.request":
+        return this.handleResourceSnapshotRead(msg, source);
       case "agent.timeline.append.request":
         return this.handleAgentTimelineAppendRequest(msg);
       case "agent.timeline.search.request":
@@ -8145,6 +8147,48 @@ export class Session {
       type: "fetch_agent_response",
       payload: { requestId, agent, project, error: null },
     });
+  }
+
+  private async handleResourceSnapshotRead(
+    msg: Extract<SessionInboundMessage, { type: "agent.resource_snapshot.read.request" }>,
+    source?: object,
+  ): Promise<void> {
+    const { requestId, agentId, clientMessageId, index } = msg;
+    try {
+      const chunk = await this.agentStorage.readResourceSnapshotChunk(
+        agentId,
+        clientMessageId,
+        index,
+        msg.offset,
+        msg.limit,
+      );
+      this.emitForSource(
+        {
+          type: "agent.resource_snapshot.read.response",
+          payload: { requestId, agentId, clientMessageId, index, chunk, error: null },
+        },
+        source,
+      );
+    } catch (error) {
+      this.sessionLogger.warn(
+        { err: error, agentId, clientMessageId, index },
+        "Failed to read resource attachment snapshot",
+      );
+      this.emitForSource(
+        {
+          type: "agent.resource_snapshot.read.response",
+          payload: {
+            requestId,
+            agentId,
+            clientMessageId,
+            index,
+            chunk: null,
+            error: "Could not read the saved resource attachment.",
+          },
+        },
+        source,
+      );
+    }
   }
 
   private async handleFetchAgentTimelineRequest(

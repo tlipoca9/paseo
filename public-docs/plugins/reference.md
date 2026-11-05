@@ -2431,7 +2431,7 @@ daemon log persists it.
 
 ## Add a composer attachment source
 
-An attachment source searches external resources and returns a stable text snapshot for an agent prompt. Keep credentials and vendor calls in the backend handler.
+An attachment source searches web or local resources and returns a stable text snapshot for an agent prompt. Keep credentials and vendor calls in the backend handler.
 
 `shared/issues.ts`:
 
@@ -2504,6 +2504,220 @@ export default function contribute(server: PluginServerContext) {
 ```
 
 Paseo owns the composer menu, search picker, selected pill, draft state, and submission. The `text` value is the complete snapshot sent to the agent. `icon` is a Lucide name or `{ svg }`; see [Icons](#icons).
+
+### Filters and local resources
+
+The resource extensions below are unreleased. Use app, daemon, and SDK builds from the same
+revision for development. Before publishing a plugin, set `requirements.paseo` to the release
+that first includes these APIs. The client checks that manifest before evaluating the bundle;
+`server_info.features.pluginResourceAttachments` separately gates the extended picker. A host
+without that feature shows an update message. Query-only web sources continue to work.
+
+Define RPC schemas in a shared module. Keep SDK imports from `@getpaseo/plugin` there; register
+handlers in the server entry and the source in the client entry.
+
+```ts
+import {
+  defineAttachmentSource,
+  defineRpc,
+  PluginAttachmentContextSchema,
+  PluginAttachmentSearchInputSchema,
+  PluginAttachmentSearchPayloadSchema,
+  PluginAttachmentFilterOptionsInputSchema,
+  PluginAttachmentFilterOptionsPayloadSchema,
+} from "@getpaseo/plugin";
+import { z } from "zod";
+
+export const context = defineRpc({
+  name: "messages.context",
+  input: z.object({}),
+  output: PluginAttachmentContextSchema,
+});
+export const search = defineRpc({
+  name: "messages.search",
+  input: PluginAttachmentSearchInputSchema,
+  output: PluginAttachmentSearchPayloadSchema,
+});
+export const filterOptions = defineRpc({
+  name: "messages.options",
+  input: PluginAttachmentFilterOptionsInputSchema,
+  output: PluginAttachmentFilterOptionsPayloadSchema,
+});
+export const messages = defineAttachmentSource({
+  id: "messages",
+  title: "Messages",
+  icon: "CircleDot",
+  pickerTitle: "Attach messages",
+  searchPlaceholder: "Search messages",
+  context,
+  search,
+  filterOptions,
+  localResources: true,
+  filters: [
+    {
+      id: "mode",
+      label: "Match",
+      kind: "select",
+      options: [
+        { value: "keyword", label: "Keywords" },
+        { value: "literal", label: "Exact phrase" },
+      ],
+    },
+    { id: "in", label: "Conversation", kind: "select" },
+    { id: "sender", label: "Sender", kind: "select" },
+    { id: "since", label: "Since", kind: "datetime", boundary: "inclusive" },
+    { id: "until", label: "Until", kind: "datetime", boundary: "inclusive" },
+  ],
+});
+```
+
+Register `messages` with `client.addAttachmentSource(messages)` and the three handlers with
+`server.handle(context, ...)`, `server.handle(search, ...)`, and
+`server.handle(filterOptions, ...)`. Filter IDs are source-defined; the host has no vendor-specific
+query syntax or field names. Filter labels and static option labels accept `PluginText`.
+
+| Export / declaration                                                                  | Contract                                                                                                                               |
+| ------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| `PluginAttachmentContextSchema` / `PluginAttachmentContext`                           | `{ scope: string, options?: Record<string, { value: string, label: string }[]> }`                                                      |
+| `PluginAttachmentSearchInputSchema` / `PluginAttachmentSearchInput`                   | `{ query: string, scope?: string, filters?: Record<string, string>, cursor?: string }`                                                 |
+| `PluginAttachmentFilterOptionsInputSchema` / `PluginAttachmentFilterOptionsInput`     | `{ scope: string, filterId: string, query: string, cursor?: string }`                                                                  |
+| `PluginAttachmentFilterOptionsPayloadSchema` / `PluginAttachmentFilterOptionsPayload` | `{ scope: string, items: { value: string, label: string }[], coverage: { truncated: boolean, nextCursor?: string }, status?, error? }` |
+| `PluginAttachmentSearchPayloadSchema` / `PluginAttachmentSearchPayload`               | `{ items: PluginAttachmentItem[], coverage?, index?, status?, error? }`                                                                |
+| `PluginAttachmentItemSchema` / `PluginAttachmentItem`                                 | `{ id, identifier, title, text, resourceType, subtitle?, url?, source? }`; all scalar fields are strings                               |
+| `source` on an item                                                                   | `{ scope: string, ref: string, label: string }`; scope and ref are nonempty, opaque strings                                            |
+
+Each item needs a valid URL or a complete local source. `localResources: true` declares URL-less
+results; both it and `filterOptions` require `context`. Preserve identifiers as strings end to end,
+including numeric-looking option values and 64-bit message IDs. Local identity is
+plugin + source ID + account scope + opaque ref. A web item's identity combines plugin, source ID,
+and item ID. Changing a display name does not create another local resource.
+
+### Account context and candidate options
+
+The host calls `context({})` before every result or candidate cache lookup. Return a lightweight
+current account scope, not an account discovered only after searching. Change it when the account
+or data identity changes. For example:
+
+```ts
+// context({})
+{ scope: "account:primary" }
+
+// search({ query: "design", scope: "account:primary",
+//   filters: { mode: "literal", in: "9223372036854775806",
+//     sender: "9223372036854775805", since: "2026-11-04T16:00:00Z" } })
+{
+  items: [{
+    id: "9223372036854775807", identifier: "Message", title: "Design discussion",
+    text: "The complete selected message, including all lines.", resourceType: "message",
+    source: { scope: "account:primary", ref: "opaque-record-reference",
+      label: "Product · Alice · 2026-11-05 00:00:00 +08:00" },
+  }],
+  coverage: { truncated: true },
+  index: { state: "ready", syncing: false, lastSuccessAt: "2026-11-05T02:00:00Z" },
+  status: "ready",
+}
+
+// filterOptions({ scope: "account:primary", filterId: "sender", query: "Ali" })
+{
+  scope: "account:primary", items: [{ value: "9223372036854775805", label: "Alice" }],
+  coverage: { truncated: true, nextCursor: "opaque-candidate-page" },
+}
+```
+
+Validate the incoming scope against the active backend account, including after asynchronous work.
+Reject a changed account through a structured error instead of returning another account's rows.
+The host also checks candidate response scope and local item scope. It ignores obsolete context
+and query completions. An account change clears old options, selected filter values, and cursors.
+
+A select filter's static `options` take precedence. Without static options, `filterOptions` loads
+candidates on opening the filter and after a short input debounce. Its query is independent of the
+body query. Candidate pages accumulate in backend order, deduplicated by exact value. If the source
+has no `filterOptions`, the host uses `context.options[filterId]`. Keep context lightweight; do not
+enumerate all senders on every body search. Candidate labels and values come from the source,
+including its account-specific identity and display-name rules.
+
+Both caches last 30 seconds and include host, plugin, source, account scope, and the complete RPC
+input. Body queries include every filter and cursor; candidate queries include filter ID, candidate
+query, and cursor. A query-only source receives `{ query }` and requires no account RPC. The host
+passes an empty query through, preserves backend ordering, and does not filter results by their
+visible title. Return recent items for an empty query if your backend supports them.
+
+Datetime fields show the device time zone and the declared boundary. The host serializes a valid
+local date and time to whole-second RFC3339 with an explicit zone (`Z`). The source applies its
+`inclusive` or `exclusive` semantics without host rounding or neighbor expansion. Both boundaries
+in the example are inclusive. Do not map an exclusive field onto an API that only accepts inclusive
+bounds. Keep backend time parsing independent of locale-dependent CLI date formats.
+
+### Result states and coverage
+
+`coverage` is `{ truncated: boolean, nextCursor?: string }`. A next cursor requires
+`truncated: true`. If your backend has no pagination, return truncation without a cursor; the picker
+asks the user to narrow filters. Do not invent cursors or imply the result covers all history.
+
+`index` is optional on body results: `{ state: "ready" | "preparing", syncing?: boolean,
+lastSuccessAt?: string }`. A ready index can still be syncing; its readable results remain usable.
+
+| `status`           | `items`              | `error`                                      | Display                                            |
+| ------------------ | -------------------- | -------------------------------------------- | -------------------------------------------------- |
+| Omitted or `ready` | Any, including empty | Absent                                       | Results or “No results”                            |
+| `preparing`        | Empty                | Absent                                       | Index is preparing, with retry                     |
+| `unavailable`      | Empty                | Required `{ code: string, message: string }` | Service unavailable and source message, with retry |
+| `error`            | Empty                | Required `{ code: string, message: string }` | Query failed and source message, with retry        |
+
+`index.state: "preparing"` requires `status: "preparing"`. The SDK rejects contradictory results.
+The same status/error rules apply to candidate results. A candidate error stays inside that filter:
+other filters, body searches, and saved references remain usable. The host never repairs a backend
+index automatically. Put backend-specific recovery instructions in the source's error message.
+
+### Snapshots and previews
+
+Return the complete readable `text` in each item. It is copied when selected, restored with the
+draft, and sent as user-supplied material. Sending does not call `search`, a get-by-ref RPC, or any
+neighbor lookup. If the backend changes afterward, the selected text and source remain unchanged.
+
+Paseo previews the full saved body and source before selection, from the draft pill, and from a
+sent local reference. Web draft pills and sent references open their URL. A URL-less item has no
+external-navigation fallback. Removing or disabling the plugin does not prevent local preview.
+
+On the wire both forms remain `type: "text", mimeType: "text/plain"`. Web presentation keeps
+`externalResource.url` required. Local presentation uses optional `localResource` metadata with
+`provider`, `providerLabel`, `sourceId`, `resourceType`, `id`, `identifier`, `title`, and `source`.
+Local source details also accompany the body in the text field so peers that discard unknown
+metadata retain the snapshot and its provenance.
+
+Sending awaits atomic storage before provider dispatch and acceptance. Reusing a `clientMessageId`
+with different snapshot content fails. Sent references survive archive and daemon restart; deleting
+the agent deletes its snapshots. Rewind does not recreate removed provider rows. The question keeps
+the ordinary timeline display budget, while the complete attachment text remains readable without
+a new body-size limit.
+
+Timeline user rows have optional `resourceSnapshot: { count, items }` metadata. Each description
+has `index`, `title`, `sourceLabel`, `excerpt`, and `kind` (`local` or `external`), with an optional
+complete web `url`. The client shows the first descriptions and a remaining-count entry, then lets
+you move through all indices without preloading their bodies. At most eight descriptions travel
+in the row, with 160 Unicode code points per title, source label, and excerpt. Their combined
+serialized UTF-8 budget is 32 KiB. Web URLs are retained whole when at most 2048 UTF-16 units and
+within that budget; longer URLs are available from the saved snapshot.
+
+Hosts advertising `pluginResourceAttachments` expose `agent.resource_snapshot.read.request`:
+
+```ts
+{ type: "agent.resource_snapshot.read.request", requestId: "read-1",
+  agentId, clientMessageId, index: 0, offset: 0, limit: 65536 }
+// Response: agent.resource_snapshot.read.response
+{ payload: { requestId: "read-1", agentId, clientMessageId, index: 0,
+  chunk: { offset: 0, nextOffset, totalBytes, sha256, encoding: "base64", data },
+  error: null } }
+```
+
+The routed host and agent store determine ownership. `index` and `offset` are nonnegative safe
+integers; `limit` is an integer from 1 through 65536 bytes. An invalid range or unavailable snapshot
+returns `chunk: null` with a generic error. Each chunk contains bytes from one immutable UTF-8 JSON
+text attachment, including its full source metadata. Boundaries may split a UTF-8 character:
+concatenate decoded base64 bytes before decoding text. Check contiguous offsets, positive progress,
+consistent `totalBytes` and `sha256`, the final length, strict UTF-8, and the SHA-256 of the complete
+byte sequence before parsing JSON. A failed preview can be retried without affecting other
+references or the composer. This RPC requires `workspace.read` in both directions.
 
 ## Hosts and lifecycle
 

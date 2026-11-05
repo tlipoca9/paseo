@@ -80,6 +80,22 @@ The `agents/{sanitized-cwd}/` directory name is derived from the agent's `cwd` b
 
 ## 1. Agent Record
 
+### Resource attachment snapshots
+
+`AgentStorage` stores selected resource text under
+`agents/resource-snapshots/{sha256(agentId)}/{sha256(clientMessageId)}/`. Each attachment has an
+index-named JSON file. The manifest contains exact ownership, the bounded question and reference
+descriptions, the submission digest, and each attachment's byte length and SHA-256. The manifest
+is written atomically after all attachment files, so an incomplete submission is never readable.
+Agent state updates do not rewrite these files or carry their full text in the main record.
+
+Prompt orchestration awaits this write before provider dispatch or acceptance. A repeated
+submission ID must carry the same snapshot; conflicting content fails. Archive preserves the
+files, while deleting the agent removes them. Provider history remains the row authority;
+[timeline projection](timeline-sync.md) restores references only through exact submission IDs.
+
+### Record fields
+
 **Path:** `$PASEO_HOME/agents/{project-dir}/{agentId}.json`
 
 Each agent is stored as a separate JSON file, grouped by project directory.

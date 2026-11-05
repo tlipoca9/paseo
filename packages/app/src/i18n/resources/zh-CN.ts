@@ -1,3 +1,4 @@
+import { pluginAttachmentsZh } from "./plugin-attachments";
 import { en, type TranslationResources } from "./en";
 import { pluginSettings } from "./plugin-settings";
 
@@ -116,6 +117,7 @@ export const zhCN: TranslationResources = {
     },
   },
   composer: {
+    pluginAttachments: pluginAttachmentsZh,
     placeholders: {
       desktop: "给 Agent 发消息，标记 @files，或使用 /commands 和 /skills",
       mobile: "发消息，@files，/commands",

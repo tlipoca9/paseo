@@ -1,3 +1,4 @@
+import { daemonWsRoutePattern } from "./daemon-port";
 import { expect, type Page } from "@playwright/test";
 import { buildHostWorkspaceRoute } from "@/utils/host-routes";
 import { createTempGitRepo } from "./workspace";
@@ -9,6 +10,147 @@ import { getServerId } from "./server-id";
 import { waitForTabBar } from "./launcher";
 import { waitForSettledPosition } from "./sheet-layout";
 import { installDaemonWebSocketGate } from "./daemon-websocket-gate";
+import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { connectDaemonClient } from "./daemon-client-loader";
+import type { DaemonClient } from "@getpaseo/client/internal/daemon-client";
+import { pluginRequirements } from "./plugin-fixture";
+
+export async function installResourceAttachmentPlugin() {
+  const client = await connectDaemonClient<DaemonClient>({
+    clientIdPrefix: "resource-attachments",
+  });
+  const config = await client.getDaemonConfig();
+  const directory = await mkdtemp(path.join(tmpdir(), "paseo-resource-attachments-"));
+  const pluginId = "resource-attachments-test";
+  await mkdir(path.join(directory, "shared"));
+  await writeFile(
+    path.join(directory, "paseo-plugin.json"),
+    JSON.stringify({ id: pluginId, requirements: pluginRequirements }),
+  );
+  await writeFile(
+    path.join(directory, "shared/rpc.ts"),
+    `
+    import { defineRpc, PluginAttachmentSearchInputSchema, PluginAttachmentSearchPayloadSchema, PluginAttachmentContextSchema, PluginAttachmentFilterOptionsInputSchema, PluginAttachmentFilterOptionsPayloadSchema } from "@getpaseo/plugin";
+    import { z } from "zod";
+    export const context = defineRpc({ name: "context", input: z.object({}), output: PluginAttachmentContextSchema });
+    export const search = defineRpc({ name: "search", input: PluginAttachmentSearchInputSchema, output: PluginAttachmentSearchPayloadSchema });
+    export const web = defineRpc({ name: "web", input: z.object({ query: z.string() }), output: PluginAttachmentSearchPayloadSchema });
+    export const options = defineRpc({ name: "options", input: PluginAttachmentFilterOptionsInputSchema, output: PluginAttachmentFilterOptionsPayloadSchema });
+    export const control = defineRpc({ name: "control", input: z.record(z.string(), z.unknown()), output: z.unknown() });
+  `,
+  );
+  await writeFile(
+    path.join(directory, "index.client.ts"),
+    `
+    import { defineAttachmentSource } from "@getpaseo/plugin";
+    import { context, search, web, options } from "./shared/rpc";
+    export default function contribute(client) {
+      client.addAttachmentSource(defineAttachmentSource({
+        id: "messages", title: "Messages", icon: "CircleDot", pickerTitle: "Attach messages", searchPlaceholder: "Search messages",
+        context, search, filterOptions: options, localResources: true,
+        filters: [
+          { id: "mode", label: "Match", kind: "select", options: [{ value: "keyword", label: "Keywords" }, { value: "literal", label: "Exact phrase" }] },
+          { id: "in", label: "Conversation", kind: "select" },
+          { id: "sender", label: "Sender", kind: "select" },
+          { id: "since", label: "Since", kind: "datetime", boundary: "inclusive" },
+          { id: "until", label: "Until", kind: "datetime", boundary: "inclusive" },
+        ],
+      }));
+      client.addAttachmentSource({ id: "web", title: "Web issue", icon: "CircleDot", pickerTitle: "Attach web issue", searchPlaceholder: "Search web issues", search: web });
+      return () => {};
+    }
+  `,
+  );
+  await writeFile(
+    path.join(directory, "index.server.ts"),
+    `
+    import { context, search, web, control, options } from "./shared/rpc";
+    export default function contribute(server) {
+      let scope = "account-a";
+      let revision = "original";
+      let longBody = false;
+      let itemCount = 2;
+      let optionError = false;
+      let release = () => {};
+      let releaseContext = () => {};
+      let releaseOptions = () => {};
+      let holdContext = false;
+      const requests = [];
+      server.handle(control, async (input) => {
+        if (input.scope) scope = input.scope;
+        if (input.revision) revision = input.revision;
+        if (typeof input.longBody === "boolean") longBody = input.longBody;
+        if (typeof input.itemCount === "number") itemCount = input.itemCount;
+        if (typeof input.optionError === "boolean") optionError=input.optionError;
+        if (input.release) release();
+        if (input.releaseOptions) releaseOptions();
+        if (input.holdContext) holdContext = true;
+        if (input.releaseContext) releaseContext();
+        return { requests: [...requests] };
+      });
+      server.handle(context, async () => {
+        const captured = scope;
+        requests.push({ method: "context", scope: captured });
+        if (holdContext) { holdContext = false; requests.push({method:"context-held",scope:captured}); await new Promise(resolve => { releaseContext = resolve; }); }
+        return { scope: captured, options: { in: [{ value: "9223372036854775806", label: "Product" }], sender: [{ value: "9223372036854775805", label: "Alice" }] } };
+      });
+      server.handle(options, async (input) => {
+        requests.push({method:"options", ...input});
+        const capturedScope=scope;
+        if(input.query === "slow") await new Promise(resolve=>{releaseOptions=resolve;});
+        if(input.query === "slow") return {scope:capturedScope,items:[{value:"stale",label:"Stale candidate"}],coverage:{truncated:false}};
+        if(optionError && input.filterId === "sender") return {scope,items:[],coverage:{truncated:false},status:"error",error:{code:"index_upgrade_required",message:"Upgrade sender candidates explicitly"}};
+        if (input.scope !== scope) return {scope,items:[],coverage:{truncated:false},status:"error",error:{code:"SCOPE_CHANGED",message:"Account changed"}};
+        return {scope,items:input.cursor ? [{value:"9223372036854775804",label:"Bob"}] : [{value:"9223372036854775805",label:"Alice"}],coverage:{truncated:!input.cursor,nextCursor:input.cursor ? undefined : "candidate-2"}};
+      });
+      server.handle(search, async (input) => {
+        requests.push({ method: "search", ...input });
+        const captured = scope;
+        if (input.scope !== scope) return { items: [], status: "error", error: { code: "scope_mismatch", message: "Account changed" } };
+        if (input.query === "slow") await new Promise(resolve => { release = resolve; });
+        if (input.query === "preparing") return {items:[],status:"preparing",index:{state:"preparing"}};
+        if (["unavailable", "error"].includes(input.query)) return { items: [], status: input.query, error: { code: input.query, message: "Synthetic service state" } };
+        if (input.query === "empty") return { items: [], status: "ready" };
+        return {
+          items: Array.from({length:itemCount}, (_, index) => (9223372036854775807n + BigInt(index)).toString()).map((id, index) => ({
+            id, identifier: index === 0 ? "MSG-2" : index === 1 ? "MSG-1" : "MSG-" + (index + 1), title: input.query === "slow" ? "Stale result" : "Indexed discussion " + (index + 1),
+            subtitle: "Product · Alice · 2026-11-05", resourceType: "message",
+            text: revision + " complete body " + id + "\\nA hidden detail outside the displayed excerpt" + (longBody ? "\\n" + (index < 2 ? "正文🙂".repeat(80000) : "Additional context. ".repeat(40)) + "\\nComplete snapshot ending " + id : ""),
+            source: { scope: captured, ref: "opaque:" + captured + ":" + id, label: "Product · Alice · 2026-11-05" },
+          })),
+          status: "ready", coverage: { truncated: true, nextCursor: input.cursor ? undefined : "page-2" },
+          index: { state: "ready", syncing: false, lastSuccessAt: "2026-11-05T10:00:00Z" },
+        };
+      });
+      server.handle(web, async (input) => {
+        requests.push({ method: "web", ...input });
+        return { items: [{ id: "web-1", identifier: "WEB-1", title: "Web discussion", text: "Web snapshot", resourceType: "issue", url: "https://example.com/issues/1" }] };
+      });
+      return () => { release(); releaseContext(); releaseOptions(); };
+    }
+  `,
+  );
+  try {
+    await client.patchDaemonConfig({ pluginsEnabled: true });
+    await client.installDirectoryPlugin(directory);
+  } catch (error) {
+    await client.close();
+    await rm(directory, { recursive: true, force: true });
+    throw error;
+  }
+  return {
+    timeline: (agentId: string) => client.fetchAgentTimeline(agentId),
+    control: (input: Record<string, unknown>) => client.invokePluginRpc(pluginId, "control", input),
+    async cleanup() {
+      await client.removePlugin(pluginId);
+      await client.patchDaemonConfig({ pluginsEnabled: config.config.pluginsEnabled });
+      await client.close();
+      await rm(directory, { recursive: true, force: true });
+    },
+  };
+}
 
 export async function controlFileUploadCompletion(page: Page) {
   const gate = await installDaemonWebSocketGate(page);
@@ -565,4 +707,20 @@ export async function roundTripComposerTabBeforePaint(
     "tab round trip must finish before rendering the hidden pane",
   ).toBe(true);
   expect(result.focused, "returning on touch must leave the composer unfocused").toBe(false);
+}
+
+export async function hideResourceAttachmentFeature(page: Page) {
+  await page.routeWebSocket(daemonWsRoutePattern(), (socket) => {
+    const server = socket.connectToServer();
+    server.onMessage((message) => {
+      const envelope = JSON.parse(message.toString()) as {
+        message?: { payload?: { status?: string; features?: Record<string, unknown> } };
+        payload?: { status?: string; features?: Record<string, unknown> };
+      };
+      const payload = envelope.message?.payload ?? envelope.payload;
+      if (payload?.status === "server_info" && payload.features)
+        delete payload.features.pluginResourceAttachments;
+      socket.send(JSON.stringify(envelope));
+    });
+  });
 }

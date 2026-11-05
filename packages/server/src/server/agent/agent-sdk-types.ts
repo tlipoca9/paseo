@@ -1,5 +1,6 @@
 import type {
   AgentInputOrigin,
+  ResourceSnapshotReference,
   AgentFeature,
   AgentFeatureSelect,
   AgentFeatureToggle,
@@ -407,6 +408,7 @@ export type AgentTimelineItem =
       text: string;
       messageId?: string;
       clientMessageId?: string;
+      resourceSnapshot?: ResourceSnapshotReference;
       origin?: AgentInputOrigin;
     }
   | { type: "assistant_message"; text: string; messageId?: string }

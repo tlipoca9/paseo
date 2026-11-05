@@ -422,6 +422,7 @@ export function runPluginClientBundle(
       const title = normalizePluginText(contribution.title);
       const pickerTitle = normalizePluginText(contribution.pickerTitle);
       const searchPlaceholder = normalizePluginText(contribution.searchPlaceholder);
+      pluginSharedRuntime.defineAttachmentSource(contribution);
       const method = contribution.search.name.trim();
       if (!title) throw new Error(`Attachment source ${normalizedId} has no title`);
       const icon = parseSerializablePluginIcon(
@@ -437,6 +438,7 @@ export function runPluginClientBundle(
       return register(
         collector.attachmentSources,
         {
+          ...contribution,
           id: normalizedId,
           title,
           icon,

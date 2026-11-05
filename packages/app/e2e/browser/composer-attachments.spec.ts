@@ -39,6 +39,341 @@ import { hasGithubAuth, createTempGithubRepo } from "../support/helpers/github-f
 import { getServerId } from "../support/helpers/server-id";
 import { openFileExplorer } from "../support/helpers/file-explorer";
 import { attachFileFromMenu, controlFileUploadCompletion } from "../support/helpers/composer";
+import {
+  hideResourceAttachmentFeature,
+  installResourceAttachmentPlugin,
+  submitMessage,
+} from "../support/helpers/composer";
+import { openAgentRoute, seedMockAgentWorkspace } from "../support/helpers/mock-agent";
+
+test.describe("plugin resource attachments", () => {
+  test.use({ timezoneId: "Asia/Shanghai" });
+  test("loads labeled filter candidates independently and preserves remote matches", async ({
+    page,
+  }) => {
+    const plugin = await installResourceAttachmentPlugin();
+    const agent = await seedMockAgentWorkspace({
+      repoPrefix: "resource-filter-",
+      title: "Resource filters",
+    });
+    try {
+      await openAgentRoute(page, agent);
+      await expectComposerVisible(page);
+      await openAttachmentMenu(page);
+      await page.getByText("Attach Messages", { exact: true }).click();
+      const picker = page.getByTestId("plugin-attachment-picker");
+      await expect(picker.getByText("Indexed discussion 1", { exact: true })).toBeVisible();
+      await picker.getByRole("button", { name: "Match (Any)", exact: true }).click();
+      await page
+        .getByTestId("plugin-attachment-filter-options")
+        .getByRole("button", { name: "Exact phrase", exact: true })
+        .click();
+      await picker.getByRole("button", { name: "Sender (Any)", exact: true }).click();
+      const candidates = page.getByTestId("plugin-attachment-filter-options");
+      await candidates.getByRole("textbox").fill("Ali");
+      await expect(candidates.getByRole("button", { name: "Alice", exact: true })).toBeVisible();
+      await candidates.getByRole("button", { name: "Load more", exact: true }).click();
+      await candidates.getByRole("button", { name: "Bob", exact: true }).click();
+      await picker.getByRole("button", { name: "Since (Any)", exact: true }).click();
+      const date = page.getByTestId("plugin-attachment-date-filter");
+      await expect(date).toContainText("Inclusive");
+      await expect(date).toContainText("Asia/Shanghai");
+      await date.getByRole("textbox", { name: "Since", exact: true }).fill("2026-11-05 00:00:00");
+      await date.getByRole("button", { name: "Apply", exact: true }).click();
+      await picker.getByRole("textbox", { name: "Search messages" }).fill("only in hidden body");
+      await expect(picker.getByTestId("plugin-attachment-result")).toHaveCount(2);
+      const history = (await plugin.control({})) as { requests: Record<string, unknown>[] };
+      expect(history.requests).toContainEqual({
+        method: "options",
+        scope: "account-a",
+        filterId: "sender",
+        query: "Ali",
+        cursor: "candidate-2",
+      });
+      expect(history.requests).toContainEqual({
+        method: "search",
+        scope: "account-a",
+        query: "only in hidden body",
+        filters: { mode: "literal", sender: "9223372036854775804", since: "2026-11-04T16:00:00Z" },
+      });
+    } finally {
+      await agent.cleanup();
+      await plugin.cleanup();
+    }
+  });
+  test("keeps candidate errors local and distinguishes empty, preparing and failed searches", async ({
+    page,
+  }) => {
+    const plugin = await installResourceAttachmentPlugin();
+    const agent = await seedMockAgentWorkspace({
+      repoPrefix: "resource-status-",
+      title: "Resource states",
+    });
+    try {
+      await plugin.control({ optionError: true });
+      await openAgentRoute(page, agent);
+      await expectComposerVisible(page);
+      await openAttachmentMenu(page);
+      await page.getByText("Attach Messages", { exact: true }).click();
+      const picker = page.getByTestId("plugin-attachment-picker");
+      await expect(picker.getByTestId("plugin-attachment-result")).toHaveCount(2);
+      await picker.getByRole("button", { name: "Sender (Any)", exact: true }).click();
+      const candidates = page.getByTestId("plugin-attachment-filter-options");
+      await expect(candidates).toContainText("Upgrade sender candidates explicitly");
+      await expect(candidates.getByRole("button", { name: "Retry", exact: true })).toBeVisible();
+      await candidates.getByRole("button", { name: "Close", exact: true }).click();
+      await picker.getByRole("button", { name: "Conversation (Any)", exact: true }).click();
+      await expect(candidates.getByRole("button", { name: "Alice", exact: true })).toBeVisible();
+      await candidates.getByRole("button", { name: "Close", exact: true }).click();
+      const query = picker.getByRole("textbox", { name: "Search messages" });
+      for (const [value, label] of [
+        ["preparing", "Index is preparing"],
+        ["unavailable", "Service unavailable"],
+        ["error", "Query failed"],
+        ["empty", "No results"],
+      ]) {
+        await query.fill(value!);
+        await expect(picker.getByText(label!, { exact: true })).toBeVisible();
+        await expect(picker.getByTestId("plugin-attachment-result")).toHaveCount(0);
+      }
+      await query.fill("body search");
+      await expect(picker.getByTestId("plugin-attachment-result")).toHaveCount(2);
+      await picker.getByRole("button", { name: "Add MSG-2", exact: true }).click();
+      await picker.getByRole("button", { name: "Done", exact: true }).click();
+      await page.getByTestId("composer-plugin-resource-attachment-pill").click();
+      await expect(page.getByTestId("plugin-resource-preview")).toContainText(
+        "original complete body",
+      );
+    } finally {
+      await agent.cleanup();
+      await plugin.cleanup();
+    }
+  });
+
+  test("discards stale body, candidate and context responses across account changes", async ({
+    page,
+  }) => {
+    test.setTimeout(90_000);
+    const plugin = await installResourceAttachmentPlugin();
+    const agent = await seedMockAgentWorkspace({
+      repoPrefix: "resource-races-",
+      title: "Resource races",
+    });
+    const requested = async (method: string, query?: string) => {
+      const result = (await plugin.control({})) as { requests: Record<string, unknown>[] };
+      return result.requests.some(
+        (entry) => entry.method === method && (query === undefined || entry.query === query),
+      );
+    };
+    try {
+      await openAgentRoute(page, agent);
+      await expectComposerVisible(page);
+      await openAttachmentMenu(page);
+      await page.getByText("Attach Messages", { exact: true }).click();
+      const picker = page.getByTestId("plugin-attachment-picker");
+      const query = picker.getByRole("textbox", { name: "Search messages" });
+      await expect(picker.getByTestId("plugin-attachment-result")).toHaveCount(2);
+      await query.fill("slow");
+      await expect.poll(() => requested("search", "slow")).toBe(true);
+      await query.fill("new query");
+      await expect(picker.getByTestId("plugin-attachment-result")).toHaveCount(2);
+      await plugin.control({ release: true });
+      await expect(picker.getByText("Stale result")).toHaveCount(0);
+      await picker.getByRole("button", { name: "Sender (Any)", exact: true }).click();
+      const candidates = page.getByTestId("plugin-attachment-filter-options");
+      await candidates.getByRole("textbox").fill("slow");
+      await expect.poll(() => requested("options", "slow")).toBe(true);
+      await candidates.getByRole("textbox").fill("Ali");
+      await expect(candidates.getByRole("button", { name: "Alice", exact: true })).toBeVisible();
+      await plugin.control({ releaseOptions: true });
+      await expect(candidates.getByText("Stale candidate")).toHaveCount(0);
+      await candidates.getByRole("button", { name: "Alice", exact: true }).click();
+      await plugin.control({ holdContext: true });
+      await query.fill("old context");
+      await expect.poll(() => requested("context-held")).toBe(true);
+      await plugin.control({ scope: "account-b" });
+      await query.fill("new account");
+      await expect(picker.getByRole("button", { name: "Sender (Any)", exact: true })).toBeVisible();
+      await expect(picker.getByTestId("plugin-attachment-result")).toHaveCount(2);
+      await plugin.control({ releaseContext: true });
+      await picker.getByRole("button", { name: "Preview MSG-2", exact: true }).click();
+      await expect(page.getByTestId("plugin-resource-preview")).toContainText(
+        "opaque:account-b:9223372036854775807",
+      );
+    } finally {
+      await plugin.control({ release: true, releaseContext: true, releaseOptions: true });
+      await agent.cleanup();
+      await plugin.cleanup();
+    }
+  });
+
+  test("gates local sources on an old host while web attachments still restore, open and send", async ({
+    page,
+    context,
+  }) => {
+    await hideResourceAttachmentFeature(page);
+    await context.route("https://example.com/**", (route) =>
+      route.fulfill({ status: 200, contentType: "text/html", body: "Web issue" }),
+    );
+    const plugin = await installResourceAttachmentPlugin();
+    const agent = await seedMockAgentWorkspace({
+      repoPrefix: "resource-legacy-",
+      title: "Legacy attachments",
+    });
+    try {
+      await openAgentRoute(page, agent);
+      await expectComposerVisible(page);
+      await openAttachmentMenu(page);
+      await page.getByText("Attach Messages", { exact: true }).click();
+      await expect(
+        page.getByText("Update this host to use resource attachment filters and local previews.", {
+          exact: true,
+        }),
+      ).toBeVisible();
+      await page
+        .getByTestId("plugin-attachment-picker")
+        .getByRole("button", { name: "Close", exact: true })
+        .click();
+      expect(((await plugin.control({})) as { requests: unknown[] }).requests).toEqual([]);
+      await openAttachmentMenu(page);
+      await page.getByText("Attach Web issue", { exact: true }).click();
+      const picker = page.getByTestId("plugin-attachment-picker");
+      await picker.getByRole("button", { name: "Add WEB-1", exact: true }).click();
+      await picker.getByRole("button", { name: "Done", exact: true }).click();
+      await page.reload({ waitUntil: "domcontentloaded" });
+      await expect(page.getByTestId("composer-plugin-resource-attachment-pill")).toHaveCount(1);
+      const opened = page.waitForEvent("popup");
+      await page.getByTestId("composer-plugin-resource-attachment-pill").click();
+      const popup = await opened;
+      await expect(popup).toHaveURL("https://example.com/issues/1");
+      await popup.close();
+      await submitMessage(page, "Explain web reference");
+      await expect(page.getByTestId("composer-plugin-resource-attachment-pill")).toHaveCount(0);
+      await expect
+        .poll(async () => JSON.stringify(await plugin.timeline(agent.agentId)))
+        .toContain("Web snapshot");
+      await expect
+        .poll(async () => JSON.stringify(await plugin.timeline(agent.agentId)))
+        .toContain("https://example.com/issues/1");
+    } finally {
+      await agent.cleanup();
+      await plugin.cleanup();
+    }
+  });
+
+  test("previews full local snapshots, restores drafts and previews the sent reference", async ({
+    page,
+  }, info) => {
+    test.setTimeout(120_000);
+    const snapshotReads: number[] = [];
+    const observeSnapshotRead = ({ payload }: { payload: string | Buffer }) => {
+      if (!payload.toString().startsWith("{")) return;
+      const envelope = JSON.parse(payload.toString());
+      const message = envelope.message ?? envelope;
+      if (message.type === "agent.resource_snapshot.read.request") {
+        snapshotReads.push(message.index);
+      }
+    };
+    page.on("websocket", (socket) => {
+      socket.on("framesent", observeSnapshotRead);
+    });
+    const plugin = await installResourceAttachmentPlugin();
+    const agent = await seedMockAgentWorkspace({
+      repoPrefix: "resource-attachment-",
+      title: "Resource attachments",
+    });
+    try {
+      await plugin.control({ longBody: true, itemCount: 10 });
+      await openAgentRoute(page, agent);
+      await expectComposerVisible(page);
+      await openAttachmentMenu(page);
+      await page.getByText("Attach Messages", { exact: true }).click();
+      const picker = page.getByTestId("plugin-attachment-picker");
+      await expect(picker.getByText("Indexed discussion 1", { exact: true })).toBeVisible();
+      await picker.getByRole("button", { name: "Preview MSG-2", exact: true }).click();
+      await expect(page.getByTestId("plugin-resource-preview")).toContainText(
+        "A hidden detail outside the displayed excerpt",
+      );
+      await page
+        .getByTestId("plugin-resource-preview")
+        .getByRole("button", { name: "Close", exact: true })
+        .click();
+      await picker.getByRole("button", { name: "Add MSG-2", exact: true }).click();
+      await picker.getByRole("button", { name: "Add MSG-1", exact: true }).click();
+      for (let index = 3; index <= 10; index++) {
+        await picker.getByRole("button", { name: `Add MSG-${index}`, exact: true }).click();
+      }
+      await picker.getByRole("button", { name: "Done", exact: true }).click();
+      await expect(page.getByTestId("composer-plugin-resource-attachment-pill")).toHaveCount(10);
+      await plugin.control({ revision: "updated" });
+      await page.reload({ waitUntil: "domcontentloaded" });
+      await expect(page.getByTestId("composer-plugin-resource-attachment-pill")).toHaveCount(10);
+      await page.getByTestId("composer-plugin-resource-attachment-pill").first().click();
+      await expect(page.getByTestId("plugin-resource-preview")).toContainText(
+        "original complete body 9223372036854775807",
+      );
+      await page
+        .getByTestId("plugin-resource-preview")
+        .getByRole("button", { name: "Close", exact: true })
+        .click();
+      await submitMessage(page, "Explain these references");
+      await expect(page.getByTestId("composer-plugin-resource-attachment-pill")).toHaveCount(0);
+      await expect(page.getByTestId("message-local-resource")).toHaveCount(8);
+      await expect(
+        page.getByRole("button", { name: "2 more references", exact: true }),
+      ).toBeVisible();
+      expect(snapshotReads).toEqual([]);
+      await page.getByTestId("message-local-resource").first().click();
+      await expect(page.getByTestId("plugin-resource-preview")).toContainText(
+        "original complete body 9223372036854775807",
+      );
+      await expect(page.getByTestId("plugin-resource-preview")).toContainText(
+        "opaque:account-a:9223372036854775807",
+      );
+      await page.screenshot({ path: info.outputPath("local-resource-preview.png") });
+      const timeline = JSON.stringify(await plugin.timeline(agent.agentId));
+      expect(timeline).toContain('"resourceSnapshot":{"count":10');
+      expect(timeline).toContain("original complete body 9223372036854775807");
+      expect(timeline).not.toContain("Complete snapshot ending");
+      expect(timeline).not.toContain("updated complete body");
+      await page
+        .getByTestId("plugin-resource-preview")
+        .getByRole("button", { name: "Close", exact: true })
+        .click();
+      snapshotReads.length = 0;
+      await page.reload({ waitUntil: "domcontentloaded" });
+      await expect(page.getByTestId("message-local-resource")).toHaveCount(8);
+      expect(snapshotReads).toEqual([]);
+      await page.getByRole("button", { name: "2 more references", exact: true }).click();
+      const preview = page.getByTestId("resource-preview-text");
+      await expect(preview).toContainText("Complete snapshot ending 9223372036854775815");
+      await page
+        .getByTestId("resource-preview-navigation")
+        .getByRole("button", { name: "Next", exact: true })
+        .click();
+      await expect(preview).toContainText("Complete snapshot ending 9223372036854775816");
+      expect(new Set(snapshotReads)).toEqual(new Set([8, 9]));
+      await page
+        .getByTestId("plugin-resource-preview")
+        .getByRole("button", { name: "Close", exact: true })
+        .click();
+      await page.setViewportSize({ width: 390, height: 844 });
+      await page.getByTestId("message-local-resource").first().click();
+      await expect(preview).toContainText("original complete body");
+      await expect(preview).toContainText("Complete snapshot ending 9223372036854775807");
+      await page
+        .getByTestId("resource-preview-navigation")
+        .getByRole("button", { name: "Next", exact: true })
+        .click();
+      await expect(preview).toContainText("Complete snapshot ending 9223372036854775808");
+      await expect(preview).toContainText("opaque:account-a:9223372036854775808");
+      await page.screenshot({ path: info.outputPath("local-resource-preview-compact.png") });
+    } finally {
+      await agent.cleanup();
+      await plugin.cleanup();
+    }
+  });
+});
 
 const MINIMAL_PNG = Buffer.from(
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",

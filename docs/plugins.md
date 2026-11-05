@@ -722,37 +722,40 @@ plugins. Plugin slash commands do not run when the composer has attachments.
 
 ## Contribute composer attachments
 
-Register a declarative attachment source backed by a plugin RPC. Paseo owns the attachment menu,
-search picker, drafts, selected pill, and submission. The plugin returns complete text snapshots;
-credentials and vendor API calls stay in the daemon handler.
+Register a declarative source with `client.addAttachmentSource`. The public
+[attachment reference](../public-docs/plugins/reference.md#add-a-composer-attachment-source)
+owns the registration, RPC schemas, filters, candidate queries, states, and snapshot contract.
+Keep credentials and vendor calls in the daemon handler. Sources stay scoped to the composer's
+host; matching sources on different hosts are separate entries.
 
-```ts
-// index.server.ts
-import type { PluginServerContext } from "@getpaseo/plugin/server";
-import { search } from "./server/issues";
-import { searchIssues } from "./shared/issues";
+The host owns the picker and draft lifecycle. It obtains account context before reading either
+search cache. Account changes discard old account cache entries, filter selections, candidate
+pages, and cursors. Both context and result completion must still belong to the active request;
+checking only the search response leaves a race before the cache lookup. The backend must also
+validate the supplied scope against its current account, including after asynchronous work.
 
-export default function contribute(server: PluginServerContext) {
-  server.handle(searchIssues, search);
-  return () => {};
-}
-```
+Resource extensions enter through one `pluginResourceAttachments` capability check in the
+picker. Query-only web sources remain available on older hosts. Client plugin loading separately
+uses manifest `requirements.paseo`; a daemon feature cannot make an old app understand a new SDK
+export. These extensions are unreleased. Development validation requires an app, daemon, and SDK
+built from the same revision. Before publishing a dependent plugin, set its minimum Paseo version
+to the release that introduces these APIs.
 
-```tsx
-// index.client.tsx
-import type { PluginClientContext } from "@getpaseo/plugin/client";
-import { issues } from "./shared/issues";
+Selected resources are copied into the draft, including the full text and stable source locator.
+Submission uses that snapshot without a fetch or neighboring-context expansion. Web resources keep
+`externalResource` and its required URL. URL-less resources use optional `localResource` metadata
+on a text attachment; source details also travel in the text so old peers retain readable context.
+The body is user-supplied material. Preview never invokes the source or depends on the plugin still
+being installed.
+After sending, AgentStorage preserves the snapshot separately from provider history. Timeline
+rows carry bounded descriptions, and opening a reference reads the saved text in checked chunks;
+see [timeline sync](timeline-sync.md) for identity and lifecycle rules and the
+[public contract](../public-docs/plugins/reference.md#snapshots-and-previews) for the read RPC.
 
-export default function contribute(client: PluginClientContext) {
-  client.addAttachmentSource(issues);
-  return () => {};
-}
-```
-
-Attachment sources stay scoped to the composer's host. Unlike sidebar contributions, equal sources
-on several hosts are not coalesced. The selected snapshot submits as a text attachment with neutral
-external-resource presentation, so it remains readable if the plugin is removed or an older peer
-drops the optional presentation fields.
+The persistent seams are the SDK host tests, attachment model and composer action tests, wire
+compatibility tests, and the `plugin resource attachments` group in
+`packages/app/e2e/browser/composer-attachments.spec.ts`. Its test plugin lives only in temporary
+directories. Browser tests exercise the actual daemon plugin runtime and client bundle loader.
 
 ## Contribute settings
 

@@ -4,6 +4,8 @@ import {
   PluginAttachmentItemSchema,
   type PluginAttachmentItem,
   type PluginSerializableIcon,
+  type PluginAttachmentSourceContribution,
+  type PluginText,
 } from "@getpaseo/plugin";
 import type { UserComposerAttachment } from "@/attachments/types";
 
@@ -32,11 +34,15 @@ export function createPluginResourceAttachment(
   source: PluginResourceSourceIdentity,
   item: PluginAttachmentItem,
 ): PluginResourceComposerAttachment {
-  return {
+  return PluginResourceComposerAttachmentSchema.parse({
     kind: "plugin_resource",
     ...source,
     item,
-  };
+  });
+}
+
+export function pluginResourceIdentity(item: PluginAttachmentItem): string {
+  return item.source && !item.url ? JSON.stringify([item.source.scope, item.source.ref]) : item.id;
 }
 
 export function togglePluginResourceAttachment(
@@ -47,7 +53,7 @@ export function togglePluginResourceAttachment(
     candidate.kind === "plugin_resource" &&
     candidate.pluginId === attachment.pluginId &&
     candidate.sourceId === attachment.sourceId &&
-    candidate.item.id === attachment.item.id;
+    pluginResourceIdentity(candidate.item) === pluginResourceIdentity(attachment.item);
   if (current.some(matches)) {
     return current.filter((candidate) => !matches(candidate));
   }
@@ -57,6 +63,26 @@ export function togglePluginResourceAttachment(
 export function pluginResourceAttachmentToAgentAttachment(
   attachment: PluginResourceComposerAttachment,
 ): AgentAttachment {
+  if (!attachment.item.url) {
+    const source = attachment.item.source;
+    if (!source) throw new Error("Local resource attachments require a source");
+    return {
+      type: "text",
+      mimeType: "text/plain",
+      title: `${attachment.item.identifier} ${attachment.item.title}`,
+      text: `${attachment.item.text}\n\nSource: ${source.label}\nAccount: ${source.scope}\nReference: ${source.ref}`,
+      localResource: {
+        provider: attachment.pluginId,
+        providerLabel: attachment.sourceTitle,
+        sourceId: attachment.sourceId,
+        resourceType: attachment.item.resourceType,
+        id: attachment.item.id,
+        identifier: attachment.item.identifier,
+        title: attachment.item.title,
+        source,
+      },
+    };
+  }
   return {
     type: "text",
     mimeType: "text/plain",
@@ -72,4 +98,14 @@ export function pluginResourceAttachmentToAgentAttachment(
       url: attachment.item.url,
     },
   };
+}
+
+export function supportsPluginAttachmentSource(
+  source: PluginAttachmentSourceContribution<PluginText>,
+  features: { pluginResourceAttachments?: boolean } | undefined,
+): boolean {
+  const extended = Boolean(
+    source.localResources || source.context || source.filterOptions || source.filters?.length,
+  );
+  return !extended || features?.pluginResourceAttachments === true;
 }

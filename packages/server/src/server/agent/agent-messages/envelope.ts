@@ -1,4 +1,5 @@
 import { renderPromptAttachmentAsText } from "../prompt-attachments.js";
+import { resourceSnapshotFromPrompt } from "../resource-snapshots.js";
 import { createHash, randomUUID } from "node:crypto";
 import { z } from "zod";
 import type {
@@ -138,7 +139,11 @@ export function prepareAgentMessage(
             .trim();
     // Quote reserved envelopes only when they arrived through the human send path.
     // This provenance must survive provider history, not only the accepted local row.
-    if (!parseAgentMessages(submittedText) && !isSystemInjectedEnvelope(submittedText)) {
+    if (
+      !resourceSnapshotFromPrompt(prompt) &&
+      !parseAgentMessages(submittedText) &&
+      !isSystemInjectedEnvelope(submittedText)
+    ) {
       return { prompt, messageId: id };
     }
   }

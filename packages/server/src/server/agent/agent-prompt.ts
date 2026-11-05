@@ -1,3 +1,4 @@
+import { resourceSnapshotFromPrompt, type ResourceSnapshotInput } from "./resource-snapshots.js";
 import { prepareAgentMessage, type AgentPromptSource } from "./agent-messages/index.js";
 import type { Logger } from "pino";
 
@@ -343,6 +344,7 @@ export async function sendPromptToAgent(
   return sendPreparedPromptToAgent({
     ...params,
     prompt: delivery.prompt,
+    resourceSnapshot: resourceSnapshotFromPrompt(params.prompt) ?? undefined,
     runOptions: delivery.messageId
       ? { ...params.runOptions, clientMessageId: delivery.messageId }
       : params.runOptions,
@@ -351,7 +353,9 @@ export async function sendPromptToAgent(
 
 /** Dispatch daemon-prepared context without reclassifying it as human input. */
 export async function sendPreparedPromptToAgent(
-  params: Omit<SendPromptToAgentParams, "source" | "messageId">,
+  params: Omit<SendPromptToAgentParams, "source" | "messageId"> & {
+    resourceSnapshot?: ResourceSnapshotInput;
+  },
 ): Promise<{ disposition: PromptDispatchDisposition }> {
   const unarchive = params.unarchive ?? true;
 
@@ -385,6 +389,13 @@ export async function sendPreparedPromptToAgent(
     await params.agentManager.setAgentMode(params.agentId, params.sessionMode);
   }
 
+  await persistResourceSnapshot(
+    params.agentStorage,
+    params.agentId,
+    params.runOptions?.clientMessageId,
+    params.resourceSnapshot,
+  );
+
   return await startAgentRun(params.agentManager, params.agentId, params.prompt, params.logger, {
     replaceRunning: !params.runOptions?.deliveryScope && !params.runOptions?.restartRecovery,
     expectedExecution: params.expectedExecution,
@@ -413,6 +424,13 @@ export async function startCreatedAgentInitialPrompt(
     await resolvePromptSource(params.source, params.agentManager, params.agentStorage),
     params.runOptions?.clientMessageId,
   );
+  const resourceSnapshot = resourceSnapshotFromPrompt(params.prompt);
+  await persistResourceSnapshot(
+    params.agentStorage,
+    params.agentId,
+    delivery.messageId,
+    resourceSnapshot,
+  );
   const dispatchResult = await startAgentRun(
     params.agentManager,
     params.agentId,
@@ -430,4 +448,18 @@ export async function startCreatedAgentInitialPrompt(
     throw new Error(`Agent ${params.agentId} not found`);
   }
   return refreshedSnapshot;
+}
+
+async function persistResourceSnapshot(
+  storage: AgentStorage,
+  agentId: string,
+  messageId: string | undefined,
+  snapshot: ResourceSnapshotInput | null | undefined,
+): Promise<void> {
+  if (snapshot) {
+    if (!messageId) throw new Error("Resource snapshot requires a submission identity");
+    await storage.saveResourceSnapshot(agentId, messageId, snapshot);
+  } else if (messageId && (await storage.getResourceSnapshotProjection(agentId, messageId))) {
+    throw new Error("Resource snapshot conflict for clientMessageId");
+  }
 }

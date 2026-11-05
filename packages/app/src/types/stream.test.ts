@@ -23,6 +23,59 @@ import { timelineItemIdentity } from "@getpaseo/protocol/timeline-identity";
 
 type CanonicalToolStatus = "running" | "completed" | "failed" | "canceled";
 
+it("resource attachment history keeps bounded descriptions and exact submission identity without question text", () => {
+  const resourceSnapshot = {
+    count: 2,
+    items: [
+      {
+        index: 0,
+        title: "Message",
+        sourceLabel: "Product • Alice • 2026-11-06",
+        excerpt: "Summary",
+        kind: "local" as const,
+      },
+    ],
+  };
+  const state = reduceStreamUpdate(
+    [],
+    {
+      type: "timeline",
+      provider: "codex",
+      item: {
+        type: "user_message",
+        text: "",
+        clientMessageId: "opaque-submission",
+        messageId: "provider-id",
+        resourceSnapshot,
+      },
+    },
+    new Date(1),
+  );
+  expect(state).toHaveLength(1);
+  expect(state[0]).toMatchObject({
+    kind: "user_message",
+    text: "",
+    clientMessageId: "opaque-submission",
+    resourceSnapshot,
+  });
+  const live = applyStreamEvent({
+    tail: [],
+    head: [],
+    event: {
+      type: "timeline",
+      provider: "codex",
+      item: {
+        type: "user_message",
+        text: "",
+        clientMessageId: "opaque-submission",
+        resourceSnapshot,
+      },
+    },
+    timestamp: new Date(1),
+  });
+  expect(live.tail[0]).toMatchObject({ clientMessageId: "opaque-submission", resourceSnapshot });
+});
+
 it("updates a resolved Claude plan at its proposal position across a follow-up", () => {
   const proposal = {
     type: "timeline",

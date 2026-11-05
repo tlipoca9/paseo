@@ -8,7 +8,10 @@ Agent chat delivery has two paths:
 The daemon retains projected items in memory. Each source event advances the stream sequence,
 then replaces the previous tool state or merges into the current text item. Intermediate payloads
 are never retained for history or catch-up. Provider history is the durable transcript authority
-and rebuilds the projection when an agent resumes.
+and rebuilds the projection when an agent resumes. Selected resource attachments have a separate
+durable snapshot: [AgentStorage](data-model.md#resource-attachment-snapshots) owns their full text
+and source. A snapshot can enrich a provider row with the same `clientMessageId`; it cannot create
+a row missing from provider history, including after rewind.
 
 Pagination bounds each read, not total resident history. Active and idle agents retain their
 projected transcript; archive releases it and later history reads rebuild it from the provider.
@@ -31,6 +34,16 @@ budget does not bound wide objects or multi-byte text. The same
 bounded item is used for runtime timeline rows and live stream events. Provider history hydration
 applies the same rule so reopening an agent cannot restore an oversized payload. Fetches apply it
 again to assistant and reasoning rows the projection merges from many chunks.
+
+Decode human envelopes from original provider text before applying this budget. Clipping the
+envelope first can remove its closing tag and lose the submission identity. Resource rows replace
+the provider's attachment-expanded text with the original question and an optional
+`resourceSnapshot` reference. The reference includes the total count and the first eight
+descriptions; each title, source label, and excerpt is at most 160 Unicode code points. It has a
+separate 32 KiB serialized UTF-8 ceiling, reserved from the ordinary item budget. URLs up to 2048
+UTF-16 units may remain whole within that ceiling. All other source fields and full text stay in
+the saved attachment. The client fetches them only when a reference is opened, using the
+[snapshot read contract](../public-docs/plugins/reference.md#snapshots-and-previews).
 
 ## Presence is not delivery
 

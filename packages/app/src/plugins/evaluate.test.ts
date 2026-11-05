@@ -333,6 +333,32 @@ describe("evaluatePluginClientBundle", () => {
     ]);
   });
 
+  it("retains local resource context and labeled filters in the client contribution", () => {
+    const plugin = evaluatePluginClientBundle(
+      "messages",
+      bundle(`
+      plugin.addAttachmentSource({
+        id: "history", title: "Messages", icon: "CircleDot", pickerTitle: "Messages", searchPlaceholder: "Search",
+        localResources: true, context: { name: "messages.context", input: {}, output: {} },
+        filters: [{ id: "mode", label: "Match", kind: "select", options: [{ value: "literal", label: "Exact phrase" }] }],
+        search: { name: "messages.search", input: {}, output: {} },
+      });
+    `),
+    );
+    expect(plugin.attachmentSources[0]).toMatchObject({
+      localResources: true,
+      context: { name: "messages.context" },
+      filters: [
+        {
+          id: "mode",
+          label: "Match",
+          kind: "select",
+          options: [{ value: "literal", label: "Exact phrase" }],
+        },
+      ],
+    });
+  });
+
   it("collects contextual workspace panels and Command Center items", () => {
     const plugin = evaluatePluginClientBundle(
       "review",

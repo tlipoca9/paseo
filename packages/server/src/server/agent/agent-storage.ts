@@ -1,4 +1,5 @@
 import { ExecutionRecoveryError } from "./restart-recovery/ownership.js";
+import { ResourceSnapshots, type ResourceSnapshotInput } from "./resource-snapshots.js";
 import { promises as fs, type Dirent } from "node:fs";
 import path from "node:path";
 import { z } from "zod";
@@ -132,14 +133,53 @@ export class AgentStorage {
   private baseDir: string;
   private loadPromise: Promise<void> | null = null;
   private logger: Logger;
+  private readonly resourceSnapshots: ResourceSnapshots;
 
   constructor(baseDir: string, logger: Logger) {
     this.baseDir = baseDir;
+    this.resourceSnapshots = new ResourceSnapshots(path.join(baseDir, "resource-snapshots"));
     this.logger = logger.child({ module: "agent", component: "agent-storage" });
   }
 
   async initialize(): Promise<void> {
     await this.load();
+  }
+
+  async saveResourceSnapshot(
+    agentId: string,
+    clientMessageId: string,
+    input: ResourceSnapshotInput,
+  ): Promise<void> {
+    await this.load();
+    const previous = this.pendingWrites.get(agentId) ?? Promise.resolve();
+    const next = previous.then(async () => {
+      if (this.deleting.has(agentId) || !this.cache.has(agentId))
+        throw new Error("Agent not found for resource snapshot");
+      await this.resourceSnapshots.save(agentId, clientMessageId, input);
+      return undefined;
+    });
+    const tracked = next.finally(() => {
+      if (this.pendingWrites.get(agentId) === tracked) this.pendingWrites.delete(agentId);
+    });
+    this.pendingWrites.set(agentId, tracked);
+    return tracked;
+  }
+
+  async getResourceSnapshotProjection(agentId: string, clientMessageId: string) {
+    if (!(await this.get(agentId)) || this.deleting.has(agentId)) return null;
+    return this.resourceSnapshots.projection(agentId, clientMessageId);
+  }
+
+  async readResourceSnapshotChunk(
+    agentId: string,
+    clientMessageId: string,
+    index: number,
+    offset: number,
+    limit: number,
+  ) {
+    if (!(await this.get(agentId)) || this.deleting.has(agentId))
+      throw new Error("Agent not found for resource snapshot");
+    return this.resourceSnapshots.chunk(agentId, clientMessageId, index, offset, limit);
   }
 
   async listAll(): Promise<StoredAgentRecord[]> {
@@ -347,6 +387,7 @@ export class AgentStorage {
     await this.load();
     this.beginDelete(agentId);
     await (this.pendingWrites.get(agentId) ?? Promise.resolve());
+    await this.resourceSnapshots.remove(agentId);
     const paths = Array.from(this.pathsById.get(agentId) ?? []);
     await Promise.all(
       paths.map(async (filePath) => {

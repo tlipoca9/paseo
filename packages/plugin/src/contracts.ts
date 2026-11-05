@@ -72,6 +72,19 @@ export interface PluginThemeContribution<Text extends PluginText = string> {
   colors: PluginThemeColors;
 }
 
+export interface PluginAttachmentFilterOption<Text extends PluginText = string> {
+  value: string;
+  label: Text;
+}
+
+export type PluginAttachmentFilter<Text extends PluginText = string> = {
+  id: string;
+  label: Text;
+} & (
+  | { kind: "select"; options?: PluginAttachmentFilterOption<Text>[] }
+  | { kind: "datetime"; boundary: "inclusive" | "exclusive" }
+);
+
 export interface PluginAttachmentSourceContribution<Text extends PluginText = string> {
   id: string;
   title: Text;
@@ -79,6 +92,10 @@ export interface PluginAttachmentSourceContribution<Text extends PluginText = st
   pickerTitle: Text;
   searchPlaceholder: Text;
   search: PluginRpcContract;
+  context?: PluginRpcContract;
+  filterOptions?: PluginRpcContract;
+  filters?: PluginAttachmentFilter<Text>[];
+  localResources?: boolean;
 }
 
 export type PluginTimelineData = JsonValue;

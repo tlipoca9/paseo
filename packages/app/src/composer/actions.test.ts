@@ -880,11 +880,49 @@ describe("removeComposerAttachmentAtIndex", () => {
 });
 
 describe("openComposerAttachment", () => {
+  it("opens the saved local resource without fetching or opening a URL", () => {
+    const item = {
+      id: "9223372036854775807",
+      identifier: "Message",
+      title: "Discussion",
+      text: "Saved body",
+      resourceType: "message",
+      source: { scope: "account-1", ref: "opaque-ref", label: "Team · Alice" },
+    };
+    const previews: unknown[] = [];
+    openComposerAttachment({
+      attachment: {
+        kind: "plugin_resource",
+        pluginId: "messages",
+        sourceId: "history",
+        sourceTitle: "Messages",
+        sourceIcon: "MessageCircle",
+        item,
+      },
+      setLightboxMetadata: () => {
+        throw new Error("unexpected image");
+      },
+      openWorkspaceAttachment: () => {
+        throw new Error("unexpected workspace");
+      },
+      openExternalUrl: () => {
+        throw new Error("unexpected URL");
+      },
+      openLocalResource: (snapshot) => {
+        previews.push(snapshot);
+      },
+    });
+    expect(previews).toEqual([item]);
+  });
+
   it("opens the lightbox for image attachments", () => {
     const image = imageWithId("img-body");
     const lightboxCalls: AttachmentMetadata[] = [];
     const externalUrlCalls: string[] = [];
     openComposerAttachment({
+      openLocalResource: () => {
+        throw new Error("unexpected local resource");
+      },
       attachment: { kind: "image", metadata: image },
       setLightboxMetadata: (metadata) => {
         lightboxCalls.push(metadata);
@@ -902,6 +940,9 @@ describe("openComposerAttachment", () => {
     const review = reviewWorkspaceAttachment("Open me.");
     const workspaceCalls: ComposerAttachment[] = [];
     openComposerAttachment({
+      openLocalResource: () => {
+        throw new Error("unexpected local resource");
+      },
       attachment: review,
       setLightboxMetadata: () => {
         throw new Error("unexpected lightbox call");
@@ -920,6 +961,9 @@ describe("openComposerAttachment", () => {
   it("opens GitHub item URLs through the external url opener", () => {
     const externalUrlCalls: string[] = [];
     openComposerAttachment({
+      openLocalResource: () => {
+        throw new Error("unexpected local resource");
+      },
       attachment: { kind: "github_issue", item: issueItem },
       setLightboxMetadata: () => {
         throw new Error("unexpected lightbox call");
@@ -935,6 +979,9 @@ describe("openComposerAttachment", () => {
   it("opens plugin resource URLs through the external url opener", () => {
     const externalUrlCalls: string[] = [];
     openComposerAttachment({
+      openLocalResource: () => {
+        throw new Error("unexpected local resource");
+      },
       attachment: {
         kind: "plugin_resource",
         pluginId: "linear",

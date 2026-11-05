@@ -157,6 +157,7 @@ import {
 } from "@/components/attachment-pill";
 import { AttachmentLightbox, type ImageLightboxSource } from "@/components/attachment-lightbox";
 import { openExternalUrl } from "@/utils/open-external-url";
+import { PluginResourcePreview, type ResourcePreview } from "@/plugins/attachments/preview";
 import { useIsDictationReady } from "@/hooks/use-is-dictation-ready";
 import { useForgeSearchQuery } from "@/git/use-forge-search-query";
 import { useCheckoutStatusQuery } from "@/git/use-status-query";
@@ -1389,6 +1390,8 @@ function ComposerContentImpl({
   const [isGithubPickerOpen, setIsGithubPickerOpen] = useState(false);
   const [githubSearchQuery, setGithubSearchQuery] = useState("");
   const [lightboxMetadata, setLightboxMetadata] = useState<AttachmentMetadata | null>(null);
+  const [resourcePreview, setResourcePreview] = useState<ResourcePreview | null>(null);
+  const closeResourcePreview = useCallback(() => setResourcePreview(null), []);
   const attachButtonRef = useRef<View | null>(null);
   const messageInputRef = useRef<MessageInputRef>(null);
   const pluginAttachments = usePluginAttachmentPicker({
@@ -1883,6 +1886,7 @@ function ComposerContentImpl({
       openComposerAttachment({
         attachment,
         setLightboxMetadata,
+        openLocalResource: setResourcePreview,
         openWorkspaceAttachment: openAttachment,
         openExternalUrl: (url) => {
           void openExternalUrl(url);
@@ -2435,6 +2439,7 @@ function ComposerContentImpl({
         }
       >
         <AttachmentLightbox source={lightboxSource} onClose={handleLightboxClose} />
+        <PluginResourcePreview item={resourcePreview} onClose={closeResourcePreview} />
         {/* Input area */}
         <View style={inputAreaContainerStyle}>
           <View style={inputAreaContentStyle}>
