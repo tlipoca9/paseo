@@ -1,7 +1,11 @@
 import { openAttachmentPicker, serializeAttachmentDateTime } from "./picker-model";
 import { describe, expect, it, vi } from "vitest";
 import { QueryClient } from "@tanstack/react-query";
-import { defineAttachmentSource, defineRpc } from "@getpaseo/plugin";
+import {
+  defineAttachmentSource,
+  defineRpc,
+  PluginAttachmentFilterOptionsInputSchema,
+} from "@getpaseo/plugin";
 import { z } from "zod";
 import { queryPluginAttachments, queryPluginAttachmentFilterOptions } from "./query";
 import {
@@ -192,6 +196,80 @@ describe("plugin resource attachments", () => {
     model.close();
     queryClient.clear();
   });
+  it.each(["reopen", "switch"] as const)(
+    "starts a fresh candidate search after %s without replaying earlier pages",
+    async (transition) => {
+      const model = openAttachmentPicker();
+      const queryClient = new QueryClient();
+      const candidateSource = defineAttachmentSource({
+        id: "messages",
+        title: "Messages",
+        icon: "CircleDot",
+        pickerTitle: "Messages",
+        searchPlaceholder: "Search",
+        search: defineRpc({ name: "search", input: z.unknown(), output: z.unknown() }),
+        context: defineRpc({ name: "context", input: z.unknown(), output: z.unknown() }),
+        filterOptions: defineRpc({ name: "options", input: z.unknown(), output: z.unknown() }),
+      });
+      const requests: unknown[] = [];
+      const invoke = async (method: string, input: unknown) => {
+        if (method === "context") return { scope: "account-a" };
+        const parsed = PluginAttachmentFilterOptionsInputSchema.parse(input);
+        requests.push(parsed);
+        if (parsed.cursor && (parsed.filterId !== "sender" || parsed.query !== "Alice")) {
+          return {
+            scope: "account-a",
+            items: [],
+            coverage: { truncated: false },
+            status: "error",
+            error: { code: "cursor_query_mismatch", message: "Cursor belongs to another search" },
+          };
+        }
+        return {
+          scope: "account-a",
+          items: [{ value: parsed.cursor ?? "first", label: parsed.query || "Recent option" }],
+          coverage: { truncated: false },
+        };
+      };
+      const read = () => {
+        const state = model.getState();
+        return queryPluginAttachmentFilterOptions({
+          serverId: "host",
+          pluginId: "plugin",
+          source: candidateSource,
+          queryClient,
+          model,
+          invoke,
+          input: {
+            filterId: state.activeFilter!,
+            query: state.candidateQuery,
+            cursor: state.candidateCursor,
+          },
+          previousCursors: state.previousCandidateCursors,
+        });
+      };
+      try {
+        model.openFilter("sender");
+        model.setCandidateQuery("Alice");
+        await read();
+        model.setCandidateCursor("alice-page-2");
+        await read();
+        model.setCandidateCursor("alice-page-3");
+        expect((await read()).result.items).toHaveLength(3);
+        requests.length = 0;
+        if (transition === "reopen") model.openFilter(null);
+        const filterId = transition === "reopen" ? "sender" : "in";
+        model.openFilter(filterId);
+        const response = await read();
+        expect(requests).toEqual([{ scope: "account-a", filterId, query: "", cursor: undefined }]);
+        expect(response.result.items).toEqual([{ value: "first", label: "Recent option" }]);
+        expect(response.result.error).toBeUndefined();
+      } finally {
+        model.close();
+        queryClient.clear();
+      }
+    },
+  );
   it("gates extended sources once while retaining query-only web sources on old hosts", () => {
     const web = defineAttachmentSource({
       id: "web",

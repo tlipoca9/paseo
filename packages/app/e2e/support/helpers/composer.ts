@@ -99,11 +99,16 @@ export async function installResourceAttachmentPlugin() {
       server.handle(options, async (input) => {
         requests.push({method:"options", ...input});
         const capturedScope=scope;
-        if(input.query === "slow") await new Promise(resolve=>{releaseOptions=resolve;});
-        if(input.query === "slow") return {scope:capturedScope,items:[{value:"stale",label:"Stale candidate"}],coverage:{truncated:false}};
+        if(input.query.startsWith("slow")) await new Promise(resolve=>{releaseOptions=resolve;});
+        if(input.query.startsWith("slow")) return {scope:capturedScope,items:[{value:"stale",label:"Stale candidate"}],coverage:{truncated:false}};
         if(optionError && input.filterId === "sender") return {scope,items:[],coverage:{truncated:false},status:"error",error:{code:"index_upgrade_required",message:"Upgrade sender candidates explicitly"}};
         if (input.scope !== scope) return {scope,items:[],coverage:{truncated:false},status:"error",error:{code:"SCOPE_CHANGED",message:"Account changed"}};
-        return {scope,items:input.cursor ? [{value:"9223372036854775804",label:"Bob"}] : [{value:"9223372036854775805",label:"Alice"}],coverage:{truncated:!input.cursor,nextCursor:input.cursor ? undefined : "candidate-2"}};
+        const prefix = input.filterId + ":" + input.query + ":";
+        if (input.cursor && !input.cursor.startsWith(prefix)) return {scope,items:[],coverage:{truncated:false},status:"error",error:{code:"cursor_query_mismatch",message:"Cursor belongs to another candidate search"}};
+        if (input.filterId === "in") return {scope,items:[{value:"9223372036854775806",label:"Product"}],coverage:{truncated:false}};
+        const page = input.cursor ? Number(input.cursor.slice(prefix.length)) : 1;
+        const candidates = [{value:"9223372036854775805",label:"Alice"},{value:"9223372036854775804",label:"Bob"},{value:"9223372036854775803",label:"Carol"}];
+        return {scope,items:[candidates[page-1]],coverage:{truncated:page<3,nextCursor:page<3 ? prefix + (page+1) : undefined}};
       });
       server.handle(search, async (input) => {
         requests.push({ method: "search", ...input });

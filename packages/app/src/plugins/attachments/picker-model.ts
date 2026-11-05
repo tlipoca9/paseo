@@ -83,7 +83,13 @@ export function openAttachmentPicker() {
     },
     setCursor: (cursor: string) => publish({ ...state, cursor }),
     openFilter: (activeFilter: string | null) =>
-      publish({ ...state, activeFilter, candidateQuery: "", candidateCursor: undefined }),
+      publish({
+        ...state,
+        activeFilter,
+        candidateQuery: "",
+        candidateCursor: undefined,
+        previousCandidateCursors: [],
+      }),
     setCandidateQuery: (candidateQuery: string) =>
       publish({
         ...state,

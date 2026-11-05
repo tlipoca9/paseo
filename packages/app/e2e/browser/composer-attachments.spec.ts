@@ -70,6 +70,27 @@ test.describe("plugin resource attachments", () => {
         .click();
       await picker.getByRole("button", { name: "Sender (Any)", exact: true }).click();
       const candidates = page.getByTestId("plugin-attachment-filter-options");
+      for (const [filter, firstOption] of [
+        ["Sender", "Alice"],
+        ["Conversation", "Product"],
+      ] as const) {
+        await candidates.getByRole("textbox").fill("Ali");
+        await expect(candidates.getByRole("button", { name: "Alice", exact: true })).toBeVisible();
+        await candidates.getByRole("button", { name: "Load more", exact: true }).click();
+        await expect(candidates.getByRole("button", { name: "Bob", exact: true })).toBeVisible();
+        await candidates.getByRole("button", { name: "Load more", exact: true }).click();
+        await expect(candidates.getByRole("button", { name: "Carol", exact: true })).toBeVisible();
+        await candidates.getByRole("button", { name: "Close", exact: true }).click();
+        await picker.getByRole("button", { name: `${filter} (Any)`, exact: true }).click();
+        await expect(candidates.getByRole("textbox")).toHaveValue("");
+        await expect(
+          candidates.getByRole("button", { name: firstOption, exact: true }),
+        ).toBeVisible();
+        await expect(candidates.getByRole("button", { name: "Bob", exact: true })).toHaveCount(0);
+        await expect(candidates.getByRole("button", { name: "Carol", exact: true })).toHaveCount(0);
+        await candidates.getByRole("button", { name: "Close", exact: true }).click();
+        await picker.getByRole("button", { name: "Sender (Any)", exact: true }).click();
+      }
       await candidates.getByRole("textbox").fill("Ali");
       await expect(candidates.getByRole("button", { name: "Alice", exact: true })).toBeVisible();
       await candidates.getByRole("button", { name: "Load more", exact: true }).click();
@@ -88,8 +109,14 @@ test.describe("plugin resource attachments", () => {
         scope: "account-a",
         filterId: "sender",
         query: "Ali",
-        cursor: "candidate-2",
+        cursor: "sender:Ali:2",
       });
+      expect(history.requests).not.toContainEqual(
+        expect.objectContaining({ method: "options", query: "", cursor: "sender:Ali:2" }),
+      );
+      expect(history.requests).not.toContainEqual(
+        expect.objectContaining({ method: "options", filterId: "in", cursor: "sender:Ali:2" }),
+      );
       expect(history.requests).toContainEqual({
         method: "search",
         scope: "account-a",
@@ -123,7 +150,7 @@ test.describe("plugin resource attachments", () => {
       await expect(candidates.getByRole("button", { name: "Retry", exact: true })).toBeVisible();
       await candidates.getByRole("button", { name: "Close", exact: true }).click();
       await picker.getByRole("button", { name: "Conversation (Any)", exact: true }).click();
-      await expect(candidates.getByRole("button", { name: "Alice", exact: true })).toBeVisible();
+      await expect(candidates.getByRole("button", { name: "Product", exact: true })).toBeVisible();
       await candidates.getByRole("button", { name: "Close", exact: true }).click();
       const query = picker.getByRole("textbox", { name: "Search messages" });
       for (const [value, label] of [
@@ -154,6 +181,13 @@ test.describe("plugin resource attachments", () => {
     page,
   }) => {
     test.setTimeout(90_000);
+    let staleCandidateResponses = 0;
+    const recordCandidateResponse = ({ payload }: { payload: string | Buffer }) => {
+      if (payload.toString().includes("Stale candidate")) staleCandidateResponses++;
+    };
+    page.on("websocket", (socket) => {
+      socket.on("framereceived", recordCandidateResponse);
+    });
     const plugin = await installResourceAttachmentPlugin();
     const agent = await seedMockAgentWorkspace({
       repoPrefix: "resource-races-",
@@ -186,7 +220,19 @@ test.describe("plugin resource attachments", () => {
       await candidates.getByRole("textbox").fill("Ali");
       await expect(candidates.getByRole("button", { name: "Alice", exact: true })).toBeVisible();
       await plugin.control({ releaseOptions: true });
+      await expect.poll(() => staleCandidateResponses).toBe(1);
       await expect(candidates.getByText("Stale candidate")).toHaveCount(0);
+      await candidates.getByRole("textbox").fill("slow close");
+      await expect.poll(() => requested("options", "slow close")).toBe(true);
+      await candidates.getByRole("button", { name: "Close", exact: true }).click();
+      await picker.getByRole("button", { name: "Conversation (Any)", exact: true }).click();
+      await expect(candidates.getByRole("button", { name: "Product", exact: true })).toBeVisible();
+      await plugin.control({ releaseOptions: true });
+      await expect.poll(() => staleCandidateResponses).toBe(2);
+      await expect(candidates.getByText("Stale candidate")).toHaveCount(0);
+      await expect(candidates.getByRole("button", { name: "Product", exact: true })).toBeVisible();
+      await candidates.getByRole("button", { name: "Close", exact: true }).click();
+      await picker.getByRole("button", { name: "Sender (Any)", exact: true }).click();
       await candidates.getByRole("button", { name: "Alice", exact: true }).click();
       await plugin.control({ holdContext: true });
       await query.fill("old context");
