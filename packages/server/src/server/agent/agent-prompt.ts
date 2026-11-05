@@ -6,7 +6,11 @@ import type { AgentManager, ManagedAgent } from "./agent-manager.js";
 import type { AgentStorage } from "./agent-storage.js";
 import { ensureAgentLoaded } from "./agent-loading.js";
 import { isStaleProviderSessionError } from "./stale-provider-session-error.js";
-import type { ActiveTurnBehavior } from "@getpaseo/protocol/messages";
+import type {
+  AgentExecution,
+  AgentExecutionGuideResult,
+  ActiveTurnBehavior,
+} from "@getpaseo/protocol/messages";
 
 export type AgentUnarchiveController = Pick<AgentManager, "notifyAgentState" | "unarchiveSnapshot">;
 
@@ -19,11 +23,14 @@ export type AgentRunController = Pick<
   | "replaceAgentRun"
   | "steerOrReplaceActiveTurn"
   | "streamAgent"
-> & {
-  reloadAgentSession(agentId: string): Promise<unknown>;
-};
+> &
+  Partial<Pick<AgentManager, "guideAgentExecution">> & {
+    reloadAgentSession(agentId: string): Promise<unknown>;
+  };
 
 export interface StartAgentRunOptions {
+  expectedExecution?: AgentExecution;
+  onExecutionGuided?: (result: AgentExecutionGuideResult) => void;
   /** Called after selecting the run, before consuming its events. */
   onDispatch?: (disposition: PromptDispatchDisposition) => void;
   replaceRunning?: boolean;
@@ -48,7 +55,21 @@ async function steerOrReplaceActiveRun(
     }
   | null
 > {
-  if (options?.activeTurnBehavior !== "steer") {
+  if (options?.expectedExecution) {
+    if (!agentManager.guideAgentExecution) throw new Error("Execution guidance is unavailable.");
+    const guided = await agentManager.guideAgentExecution({
+      execution: options.expectedExecution,
+      prompt,
+      messageId: options.runOptions?.clientMessageId ?? "",
+      inputOrigin: options.runOptions?.inputOrigin,
+      deliveryScope: options.runOptions?.deliveryScope,
+    });
+    options.onExecutionGuided?.(guided.result);
+    return guided.iterator
+      ? { disposition: "turn_started", iterator: guided.iterator }
+      : { disposition: "steered" };
+  }
+  if (options?.runOptions?.deliveryScope || options?.activeTurnBehavior !== "steer") {
     return null;
   }
   const steerOptions = options.clearPendingPermissions
@@ -95,6 +116,8 @@ export async function startAgentRun(
   logger: Logger,
   options?: StartAgentRunOptions,
 ): Promise<{ disposition: PromptDispatchDisposition }> {
+  const runOptions = options?.runOptions;
+  runOptions?.deliveryScope?.assertActive();
   const snapshot = agentManager.getAgent(agentId);
   logger.trace(
     {
@@ -103,7 +126,7 @@ export async function startAgentRun(
       providerSessionId: snapshot?.persistence?.sessionId ?? undefined,
       turnId: snapshot?.activeForegroundTurnId ?? undefined,
       promptType: typeof prompt === "string" ? "string" : "structured",
-      hasRunOptions: Boolean(options?.runOptions),
+      hasRunOptions: Boolean(runOptions),
       replaceRunning: Boolean(options?.replaceRunning),
     },
     "agent.session.start_stream.request",
@@ -111,7 +134,10 @@ export async function startAgentRun(
   // Out-of-band commands (e.g. /goal pause) must run WITHOUT canceling an
   // in-flight turn — replaceAgentRun would interrupt the running turn. The
   // intercept lives at this layer so it covers every prompt entrypoint.
-  if (await agentManager.tryRunOutOfBand(agentId, prompt, options?.runOptions)) {
+  if (
+    !options?.expectedExecution &&
+    (await agentManager.tryRunOutOfBand(agentId, prompt, runOptions))
+  ) {
     options?.onDispatch?.("out_of_band");
     return { disposition: "out_of_band" };
   }
@@ -210,6 +236,8 @@ export async function unarchiveAgentState(
 }
 
 export interface SendPromptToAgentParams {
+  expectedExecution?: AgentExecution;
+  onExecutionGuided?: (result: AgentExecutionGuideResult) => void;
   onDispatch?: StartAgentRunOptions["onDispatch"];
   agentManager: AgentManager;
   agentStorage: AgentStorage;
@@ -358,7 +386,9 @@ export async function sendPreparedPromptToAgent(
   }
 
   return await startAgentRun(params.agentManager, params.agentId, params.prompt, params.logger, {
-    replaceRunning: true,
+    replaceRunning: !params.runOptions?.deliveryScope && !params.runOptions?.restartRecovery,
+    expectedExecution: params.expectedExecution,
+    onExecutionGuided: params.onExecutionGuided,
     onDispatch: params.onDispatch,
     activeTurnBehavior: params.activeTurnBehavior,
     clearPendingPermissions: params.clearPendingPermissions,

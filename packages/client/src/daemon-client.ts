@@ -1,3 +1,13 @@
+import type {
+  AgentExecutionGuideInput,
+  DeliveryScopeOperation,
+  DeliveryScopeRequest,
+} from "@getpaseo/protocol/messages";
+import type {
+  AgentExecution,
+  AgentExecutionStopResult,
+  AgentExecutionGuideResult,
+} from "@getpaseo/protocol/messages";
 import {
   ChunkedTransport,
   ChunkedTransportProtocolError,
@@ -465,8 +475,11 @@ export interface DaemonClientTrace {
 }
 
 export interface SendMessageOptions {
+  deliveryScopeId?: string;
+  expectedExecution?: AgentExecution;
   sourceAgentId?: string;
   sourceAgentServerId?: string;
+  sourceNotification?: "finished" | "errored" | "permission-required" | "closed";
   sessionMode?: string;
   messageId?: string;
   /** What happens when the agent is mid-turn. The daemon interrupts the turn when omitted. */
@@ -1305,6 +1318,14 @@ interface PingProbe {
 // COMPAT(providerUsageList): added in v0.1.98, remove after 2027-03-26.
 export function supportsUsageReports(features: ServerInfoStatusPayload["features"]): boolean {
   return features?.usageSources === true || features?.providerUsageList === true;
+}
+
+export class DeliveryScopeRecoveryUnsupportedError extends Error {
+  readonly feature = "deliveryScopeRecovery";
+  constructor() {
+    super("Update the Paseo host to bind execution recovery to a delivery scope.");
+    this.name = "DeliveryScopeRecoveryUnsupportedError";
+  }
 }
 
 export class TerminalKeepUnsupportedError extends Error {
@@ -3947,6 +3968,8 @@ export class DaemonClient {
     ) {
       throw new Error("Update the Paseo host to send messages with a qualified agent address.");
     }
+    if (options.expectedExecution || options.sourceNotification) this.requireMessageReceipts();
+    if (options.deliveryScopeId) this.requireDeliveryScopes();
     const requestId = this.createRequestId();
     const messageId = options.messageId ?? crypto.randomUUID();
     const message = SessionInboundMessageSchema.parse({
@@ -3954,8 +3977,11 @@ export class DaemonClient {
       requestId,
       agentId,
       text,
+      deliveryScopeId: options.deliveryScopeId,
+      expectedExecution: options.expectedExecution,
       sourceAgentId: options.sourceAgentId,
       sourceAgentServerId: options.sourceAgentServerId,
+      sourceNotification: options.sourceNotification,
       sessionMode: options.sessionMode,
       ...(messageId ? { messageId } : {}),
       activeTurnBehavior: options.activeTurnBehavior,
@@ -4021,6 +4047,137 @@ export class DaemonClient {
       throw new Error(payload.error ?? "Agent rewind failed");
     }
     return payload;
+  }
+
+  private requireDeliveryScopes(): void {
+    if (this.lastServerInfoMessage?.features?.deliveryScopes !== true)
+      throw new Error("Update the Paseo host to use revocable delivery scopes.");
+  }
+
+  async deliveryScope(
+    input: DeliveryScopeOperation,
+  ): Promise<import("@getpaseo/protocol/messages").DeliveryScopeSnapshot> {
+    this.requireDeliveryScopes();
+    if (
+      input.action === "bind_execution" &&
+      this.lastServerInfoMessage?.features?.deliveryScopeRecovery !== true
+    )
+      throw new DeliveryScopeRecoveryUnsupportedError();
+    const requestId = this.createRequestId();
+    let message: DeliveryScopeRequest;
+    switch (input.action) {
+      case "create":
+        message = { type: "delivery.scope.create.request", requestId };
+        break;
+      case "get":
+        message = { type: "delivery.scope.get.request", scopeId: input.scopeId, requestId };
+        break;
+      case "revoke":
+        message = { type: "delivery.scope.revoke.request", scopeId: input.scopeId, requestId };
+        break;
+      case "bind_execution":
+        message = {
+          type: "delivery.scope.bind_execution.request",
+          scopeId: input.scopeId,
+          execution: input.execution,
+          requestId,
+        };
+        break;
+    }
+    const payload = await this.sendRequest({
+      requestId,
+      message,
+      options: { skipQueue: true },
+      select: (msg) => {
+        const isScopeResponse =
+          msg.type === "delivery.scope.create.response" ||
+          msg.type === "delivery.scope.get.response" ||
+          msg.type === "delivery.scope.revoke.response" ||
+          msg.type === "delivery.scope.bind_execution.response";
+        return isScopeResponse && msg.payload.requestId === requestId ? msg.payload : null;
+      },
+    });
+    return payload.scope;
+  }
+
+  async captureAgentExecution(agentId: string, messageId?: string): Promise<AgentExecution | null> {
+    this.requireExecutionControl();
+    const requestId = this.createRequestId();
+    const payload = await this.sendRequest({
+      requestId,
+      message: { type: "agent.execution.capture.request", agentId, messageId, requestId },
+      options: { skipQueue: true },
+      select: (msg) =>
+        msg.type === "agent.execution.capture.response" && msg.payload.requestId === requestId
+          ? msg.payload
+          : null,
+    });
+    return payload.execution;
+  }
+
+  async stopAgentExecution(
+    agentId: string,
+    execution: AgentExecution,
+  ): Promise<AgentExecutionStopResult> {
+    this.requireExecutionControl();
+    const requestId = this.createRequestId();
+    const payload = await this.sendRequest({
+      requestId,
+      message: { type: "agent.execution.stop.request", agentId, execution, requestId },
+      options: { skipQueue: true },
+      select: (msg) =>
+        msg.type === "agent.execution.stop.response" && msg.payload.requestId === requestId
+          ? msg.payload
+          : null,
+    });
+    return payload.result;
+  }
+
+  async guideAgentExecution(input: AgentExecutionGuideInput): Promise<AgentExecutionGuideResult> {
+    this.requireExecutionControl();
+    const requestId = this.createRequestId();
+    const payload = await this.sendRequest({
+      requestId,
+      message: {
+        type: "agent.execution.guide.request",
+        ...input,
+        requestId,
+      },
+      options: { skipQueue: true },
+      select: (msg) =>
+        msg.type === "agent.execution.guide.response" && msg.payload.requestId === requestId
+          ? msg.payload
+          : null,
+    });
+    return payload.result;
+  }
+
+  async getAgentMessageReceipt(
+    agentId: string,
+    messageId: string,
+  ): Promise<import("@getpaseo/protocol/messages").AgentMessageReceipt> {
+    this.requireMessageReceipts();
+    const requestId = this.createRequestId();
+    const payload = await this.sendRequest({
+      requestId,
+      message: { type: "agent.message.get_receipt.request", agentId, messageId, requestId },
+      options: { skipQueue: true },
+      select: (msg) =>
+        msg.type === "agent.message.get_receipt.response" && msg.payload.requestId === requestId
+          ? msg.payload
+          : null,
+    });
+    return payload.receipt;
+  }
+
+  private requireMessageReceipts(): void {
+    if (this.getLastServerInfoMessage()?.features?.agentMessageReceipts !== true)
+      throw new Error("Update the host to use message receipts and execution-bound peer delivery.");
+  }
+
+  private requireExecutionControl(): void {
+    if (this.getLastServerInfoMessage()?.features?.agentExecutionControl !== true)
+      throw new Error("Update the host to use confirmed execution control.");
   }
 
   async cancelAgent(agentId: string): Promise<void> {

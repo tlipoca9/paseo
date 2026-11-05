@@ -1,3 +1,4 @@
+import { AgentExecutionSchema, type AgentExecution } from "@getpaseo/protocol/messages";
 import type { PluginHookAgent } from "@getpaseo/plugin/server";
 import { UsageScopeSchema, type UsageScope } from "@getpaseo/plugin/server/usage";
 import type {
@@ -32,7 +33,14 @@ export interface PluginUsageSourceMetadata {
 }
 
 export type PluginProcessRequest =
-  | { type: "tool.call"; requestId: string; agent: PluginHookAgent; name: string; input: unknown }
+  | {
+      type: "tool.call";
+      execution?: AgentExecution | null;
+      requestId: string;
+      agent: PluginHookAgent;
+      name: string;
+      input: unknown;
+    }
   | { type: "tool.cancel"; requestId: string }
   | { type: "tools.detach"; agentId: string }
   | {
@@ -159,6 +167,7 @@ export const PluginProcessRequestSchema: z.ZodType<PluginProcessRequest> = z.dis
     z
       .object({
         type: z.literal("tool.call"),
+        execution: AgentExecutionSchema.nullable().optional(),
         requestId: z.string(),
         agent: z
           .object({

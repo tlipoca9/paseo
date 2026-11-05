@@ -21,13 +21,17 @@ the prompt with `agents.resumePrompt` or the same settings page.
 Disabling recovery consumes pending intent; enabling it later does not revive old work.
 
 Only agents recorded as running qualify. Idle and initializing agents stay inactive. Archived
-agents or workspaces, private helpers and Hub-owned executions retain their own lifecycle.
+agents or workspaces, private helpers, Hub-owned executions and plugin-scoped executions retain their own lifecycle.
 Explicit creation environment overrides are saved with the agent and reapplied when reopening.
 
 Startup chooses candidates before anything else reads or repairs persisted running state, then
 opens connections and resumes every candidate in the background. A provider that is slow to reopen
 holds back only its own agent; a failed reopen is logged. Graceful shutdown records intent before
-closing runtimes.
+closing runtimes. Execution recovery ownership is saved before provider admission. Scoped work and
+trusted bindings of an existing execution remain under plugin recovery even if the daemon exits
+before cancellation reaches the provider. A later unscoped execution replaces this ownership.
+Startup continuation checks the saved execution again at admission and cannot replace a newer run.
+An expired scope or a closed session does not prove that an old execution's tools stopped.
 
 This is best-effort continuation. A crash between saving intent and dispatching a prompt can lose
 or repeat a continuation. Provider resume owns conversation restoration; there is no recovery retry
@@ -116,6 +120,8 @@ arrives or the run was still waiting for its provider turn id. The captured run 
 older cancellation from settling a newer turn. If interruption is rejected or times out, the agent
 keeps its active foreground turn and replacement, reload, rewind, and Stop report the failure.
 Accepting new work after an ambiguous interruption would create a split-brain session.
+
+Plugins that must wait for tools to stop use [confirmed execution control](../public-docs/sdk/reference.md#confirmed-execution-control). Its identity includes the runtime and daemon run token. The foreground mutation lane protects the capture, stop and continuation admission; native terminal events and idle state alone do not authorize continuation. Provider adapters opt in through `AgentSession.stopTurn(turnId)`, which must confirm the captured turn and its tools. An adapter without that evidence leaves the operation unresolved.
 
 ## Relationships
 

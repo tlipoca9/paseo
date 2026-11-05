@@ -1,3 +1,4 @@
+import { AgentMessageReceiptSchema, type AgentMessageReceipt } from "@getpaseo/protocol/messages";
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
@@ -8,12 +9,13 @@ const ReceiptSchema = z.object({
   fingerprint: z.string(),
   state: z.enum(["pending", "completed"]),
   agentId: z.string(),
+  delivery: AgentMessageReceiptSchema.optional(),
 });
 interface SendMessageInput {
   agentId: string;
   messageId: string;
   request: unknown;
-  send: () => Promise<void>;
+  send: () => Promise<void | AgentMessageReceipt>;
   prepare?: () => Promise<void>;
 }
 
@@ -21,6 +23,15 @@ interface SendMessageInput {
 export class MessageReceipts {
   private readonly pending = new Map<string, Promise<void>>();
   constructor(private readonly directory: string) {}
+
+  async get(agentId: string, messageId: string): Promise<AgentMessageReceipt> {
+    const key = digest(["send", agentId, messageId]);
+    const receipt = await readReceipt(path.join(this.directory, key + ".json"));
+    if (!receipt) return { status: "not_found" };
+    if (receipt.delivery) return receipt.delivery;
+    if (receipt.state === "completed") return { status: "delivered" };
+    return { status: this.pending.has(key) ? "queued" : "unknown" };
+  }
 
   send(input: SendMessageInput): Promise<void> {
     // Preserve the existing on-disk identity and shape across daemon upgrades.
@@ -44,15 +55,19 @@ export class MessageReceipts {
     const existing = await readReceipt(file);
     if (existing) {
       if (existing.fingerprint !== fingerprint) throw new Error("agent_request_key_conflict");
-      if (existing.state === "completed") return;
+      if (existing.state === "completed" && !existing.delivery?.retryable) return;
       // A provider may have accepted the message before its receipt was committed.
-      throw new Error("agent_request_outcome_unknown");
+      if (!existing.delivery?.retryable) throw new Error("agent_request_outcome_unknown");
     }
     await input.prepare?.();
     const receipt = { fingerprint, agentId: input.agentId };
     await writeJsonFileAtomic(file, { ...receipt, state: "pending" });
-    await input.send();
-    await writeJsonFileAtomic(file, { ...receipt, state: "completed" });
+    const delivery = await input.send();
+    await writeJsonFileAtomic(file, {
+      ...receipt,
+      state: "completed",
+      ...(delivery ? { delivery } : {}),
+    });
   }
 }
 

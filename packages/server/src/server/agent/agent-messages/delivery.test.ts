@@ -313,3 +313,55 @@ test("runtime safety sees queued messages until provider dispatch settles", asyn
   await delivery.close();
   expect(delivery.hasPending("parent")).toBe(false);
 });
+
+test("revocation rejects a scoped message already moved into a blocked dispatch chain", async () => {
+  const { DeliveryScopes } = await import("../delivery-scopes.js");
+  const clock = createClock();
+  const scopes = new DeliveryScopes();
+  const { id } = scopes.create("plugin", "connection");
+  const scope = scopes.require("plugin", "connection", id);
+  let release!: () => void;
+  let entered!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const started = new Promise<void>((resolve) => {
+    entered = resolve;
+  });
+  const prompts: string[] = [];
+  const delivery = createAgentMessageDelivery({
+    schedule: clock.schedule,
+    dispatch: async (request) => {
+      prompts.push(...request.messageIds);
+      entered();
+      await gate;
+      return "steered";
+    },
+    onError: () => {},
+  });
+  const source = { kind: "agent-message" as const, agentId: "sender" };
+  const first = delivery.enqueue({
+    recipientId: "agent",
+    messageId: "other-scope",
+    prompt: "first",
+    source,
+  });
+  clock.advance(2000);
+  await started;
+  const second = delivery.enqueue({
+    recipientId: "agent",
+    messageId: "revoked-scope",
+    prompt: "second",
+    source,
+    deliveryScope: scope,
+  });
+  clock.advance(2000);
+  const rejected = expect(second.dispatched).rejects.toThrow(/revoked/i);
+  await scopes.revoke("plugin", id);
+  await rejected;
+  expect(prompts).toEqual(["other-scope"]);
+  release();
+  await first.dispatched;
+  await delivery.close();
+  expect(prompts).toEqual(["other-scope"]);
+});

@@ -1,3 +1,5 @@
+import { DeliveryScopes, DeliveryRevokedError } from "./agent/delivery-scopes.js";
+import { AgentExecutionStopError } from "./agent/agent-manager.js";
 import { type WorkspaceRuntimeStore } from "./workspace-runtime-store/index.js";
 import type { AgentMessageDelivery } from "./agent/agent-messages/index.js";
 import { AgentDirectory, type BackgroundVisibility } from "./agent/directory.js";
@@ -478,8 +480,10 @@ export interface SessionOptions {
   worktreesRoot?: string;
   agentManager: AgentManager;
   agentStorage: AgentStorage;
-  messageReceipts: Pick<MessageReceipts, "send">;
+  messageReceipts: Pick<MessageReceipts, "send" | "get">;
   agentMessages: AgentMessageDelivery;
+  deliveryScopes?: DeliveryScopes;
+  trustedPluginId?: string;
   creationService: Pick<CreationService, "create" | "subscribe">;
   projectRegistry: ProjectRegistry;
   workspaceRegistry: WorkspaceRegistry;
@@ -843,7 +847,10 @@ export class Session {
   private readonly daemonSession: DaemonSession;
   private readonly hubExecutionController: HubExecutionController | null;
   private readonly workspaceScripts: WorkspaceScriptsService;
-  private readonly messageReceipts: Pick<MessageReceipts, "send">;
+  private readonly deliveryScopes: DeliveryScopes;
+  private readonly trustedPluginId?: string;
+  private readonly scopeConnectionId = crypto.randomUUID();
+  private readonly messageReceipts: Pick<MessageReceipts, "send" | "get">;
   private readonly agentMessages: AgentMessageDelivery;
   private readonly createAgentLifecycleDispatch: CreateAgentLifecycleDispatch;
   private readonly creationService: Pick<CreationService, "create" | "subscribe">;
@@ -930,6 +937,8 @@ export class Session {
     this.pushNotifications = pushNotifications;
     this.paseoHome = paseoHome;
     this.messageReceipts = options.messageReceipts;
+    this.deliveryScopes = options.deliveryScopes ?? new DeliveryScopes();
+    this.trustedPluginId = options.trustedPluginId;
     this.agentMessages = options.agentMessages;
     this.creationService = options.creationService;
     this.projectIcons = new ProjectIconReader(paseoHome);
@@ -3010,6 +3019,81 @@ export class Session {
     }
   }
 
+  private dispatchExecutionControlMessage(msg: SessionInboundMessage): Promise<void> | undefined {
+    switch (msg.type) {
+      case "delivery.scope.create.request":
+      case "delivery.scope.get.request":
+      case "delivery.scope.revoke.request":
+      case "delivery.scope.bind_execution.request": {
+        const pluginId = this.requireTrustedPlugin();
+        if (msg.type === "delivery.scope.create.request")
+          return Promise.resolve(
+            this.emit({
+              type: "delivery.scope.create.response",
+              payload: {
+                requestId: msg.requestId,
+                scope: this.deliveryScopes.create(pluginId, this.scopeConnectionId),
+              },
+            }),
+          );
+        if (msg.type === "delivery.scope.bind_execution.request") {
+          const scope = this.deliveryScopes.require(pluginId, this.scopeConnectionId, msg.scopeId);
+          return this.agentManager.bindAgentExecutionScope(msg.execution, scope).then(() =>
+            this.emit({
+              type: "delivery.scope.bind_execution.response",
+              payload: {
+                requestId: msg.requestId,
+                scope: this.deliveryScopes.get(pluginId, scope.id),
+              },
+            }),
+          );
+        }
+        const result =
+          msg.type === "delivery.scope.revoke.request"
+            ? this.deliveryScopes.revoke(pluginId, msg.scopeId)
+            : Promise.resolve(this.deliveryScopes.get(pluginId, msg.scopeId));
+        return result.then((scope) =>
+          this.emit({
+            type:
+              msg.type === "delivery.scope.revoke.request"
+                ? "delivery.scope.revoke.response"
+                : "delivery.scope.get.response",
+            payload: { requestId: msg.requestId, scope },
+          }),
+        );
+      }
+      case "agent.execution.capture.request":
+        return this.agentManager
+          .captureAgentExecution(msg.agentId, msg.messageId)
+          .then((execution) => {
+            return this.emit({
+              type: "agent.execution.capture.response",
+              payload: { requestId: msg.requestId, execution },
+            });
+          });
+      case "agent.message.get_receipt.request":
+        return this.messageReceipts.get(msg.agentId, msg.messageId).then((receipt) =>
+          this.emit({
+            type: "agent.message.get_receipt.response",
+            payload: { requestId: msg.requestId, receipt },
+          }),
+        );
+      case "agent.execution.guide.request":
+        return this.handleGuideExecution(msg);
+      case "agent.execution.stop.request":
+        return this.agentManager
+          .stopAgentExecution({ ...msg.execution, agentId: msg.agentId })
+          .then((result) => {
+            return this.emit({
+              type: "agent.execution.stop.response",
+              payload: { requestId: msg.requestId, result },
+            });
+          });
+      default:
+        return undefined;
+    }
+  }
+
   private dispatchAgentLifecycleMessage(msg: SessionInboundMessage): Promise<void> | undefined {
     switch (msg.type) {
       case "fetch_agents_request":
@@ -3051,7 +3135,7 @@ export class Session {
       case "clear_agent_attention":
         return this.handleClearAgentAttention(msg.agentId, msg.requestId);
       default:
-        return undefined;
+        return this.dispatchExecutionControlMessage(msg);
     }
   }
 
@@ -4632,6 +4716,7 @@ export class Session {
             ? { kind: "agent-message", agentId: msg.callerAgentId }
             : undefined,
           clientMessageId,
+          inputOrigin: this.inputOrigin(),
           outputSchema,
           images,
           attachments,
@@ -4952,6 +5037,39 @@ export class Session {
           type: "error",
           content: `Failed to refresh agent: ${message}`,
         },
+      });
+    }
+  }
+
+  private async handleGuideExecution(
+    msg: Extract<SessionInboundMessage, { type: "agent.execution.guide.request" }>,
+  ): Promise<void> {
+    try {
+      let result: import("@getpaseo/protocol/messages").AgentExecutionGuideResult | undefined;
+      await sendPromptToAgent({
+        agentManager: this.agentManager,
+        agentStorage: this.agentStorage,
+        agentId: msg.agentId,
+        prompt: msg.text,
+        messageId: msg.messageId,
+        expectedExecution: { ...msg.execution, agentId: msg.agentId },
+        runOptions: { inputOrigin: this.inputOrigin() },
+        onExecutionGuided: (guided) => {
+          result = guided;
+        },
+        unarchive: false,
+        logger: this.sessionLogger,
+      });
+      if (!result) throw new Error("The session is unavailable for guidance.");
+      this.emit({
+        type: "agent.execution.guide.response",
+        payload: { requestId: msg.requestId, result },
+      });
+    } catch (error) {
+      if (!(error instanceof AgentExecutionStopError)) throw error;
+      this.emit({
+        type: "agent.execution.guide.response",
+        payload: { requestId: msg.requestId, result: error.result },
       });
     }
   }
@@ -8472,6 +8590,17 @@ export class Session {
     }
   }
 
+  private requireTrustedPlugin(): string {
+    if (!this.trustedPluginId)
+      throw new Error("Delivery scopes require a trusted plugin connection.");
+    return this.trustedPluginId;
+  }
+
+  private inputOrigin(): import("@getpaseo/protocol/agent-types").AgentInputOrigin {
+    const pluginId = this.trustedPluginId;
+    return pluginId ? { kind: "plugin", pluginId } : { kind: "human" };
+  }
+
   private async handleSendAgentMessageRequest(
     msg: Extract<SessionInboundMessage, { type: "send_agent_message_request" }>,
   ): Promise<void> {
@@ -8491,6 +8620,16 @@ export class Session {
 
     try {
       const agentId = resolved.agentId;
+      const scope = msg.deliveryScopeId
+        ? this.deliveryScopes.require(
+            this.requireTrustedPlugin(),
+            this.scopeConnectionId,
+            msg.deliveryScopeId,
+          )
+        : undefined;
+      if (scope && !msg.messageId) throw new Error("Scoped delivery requires a message ID.");
+      if ((msg.expectedExecution || msg.sourceNotification) && !msg.sourceAgentId)
+        throw new Error("Execution-bound delivery requires an agent source.");
 
       const prompt = buildAgentPrompt(msg.text, msg.images, msg.attachments);
       this.sessionLogger.trace(
@@ -8508,13 +8647,25 @@ export class Session {
       });
       let deliveryStatus: "queued" | undefined;
       const send = async () => {
+        scope?.assertActive();
         if (msg.sourceAgentId) {
+          let guided: import("@getpaseo/protocol/messages").AgentExecutionGuideResult | undefined;
           const receipt = this.agentMessages.enqueue({
             recipientId: agentId,
+            deliveryScope: scope,
+            inputOrigin: this.inputOrigin(),
+            expectedExecution: msg.expectedExecution
+              ? { ...msg.expectedExecution, agentId }
+              : undefined,
+            onExecutionGuided: (result) => {
+              guided = result;
+            },
             messageId: msg.messageId,
             prompt,
             source: {
-              kind: "agent-message",
+              ...(msg.sourceNotification
+                ? { kind: "agent-notification" as const, event: msg.sourceNotification }
+                : { kind: "agent-message" as const }),
               agentId: msg.sourceAgentId,
               serverId: msg.sourceAgentServerId,
               title: !msg.sourceAgentServerId
@@ -8527,8 +8678,29 @@ export class Session {
           });
           deliveryStatus = "queued";
           queued();
-          await receipt.dispatched;
-          return;
+          try {
+            await receipt.dispatched;
+            return {
+              status: "delivered" as const,
+              execution:
+                guided?.execution ??
+                (scope
+                  ? ((await this.agentManager.captureAgentExecution(agentId, msg.messageId)) ??
+                    undefined)
+                  : undefined),
+              guidanceStatus: guided?.status,
+            };
+          } catch (error) {
+            if (error instanceof DeliveryRevokedError)
+              return { status: "revoked" as const, reason: error.message, retryable: false };
+            if (!(error instanceof AgentExecutionStopError)) throw error;
+            return {
+              status: "failed" as const,
+              guidanceStatus: error.result.status,
+              reason: error.result.reason,
+              retryable: ["refused", "timed_out"].includes(error.result.status),
+            };
+          }
         }
         const result = await sendPromptToAgent({
           agentManager: this.agentManager,
@@ -8536,6 +8708,7 @@ export class Session {
           agentId,
           prompt,
           messageId: msg.messageId,
+          runOptions: { inputOrigin: this.inputOrigin(), deliveryScope: scope },
           activeTurnBehavior: msg.activeTurnBehavior ?? "interrupt",
           sessionMode: msg.sessionMode,
           clearPendingPermissions: true,
@@ -8549,24 +8722,41 @@ export class Session {
           );
         }
       };
-      const sent = msg.messageId
-        ? this.messageReceipts.send({
-            agentId,
-            messageId: msg.messageId,
-            request: {
-              prompt,
-              sourceAgentId: msg.sourceAgentId,
-              sourceAgentServerId: msg.sourceAgentServerId,
-              sessionMode: msg.sessionMode,
-              activeTurnBehavior:
-                msg.activeTurnBehavior ?? (msg.sourceAgentId ? "steer" : "interrupt"),
-            },
-            prepare: async () => {
-              if (!msg.sourceAgentId) await this.prepareAgentMessage(agentId, msg.text);
-            },
-            send,
+      const perform = () =>
+        msg.messageId
+          ? this.messageReceipts.send({
+              agentId,
+              messageId: msg.messageId,
+              request: {
+                prompt,
+                deliveryScopeId: msg.deliveryScopeId,
+                expectedExecution: msg.expectedExecution,
+                sourceAgentId: msg.sourceAgentId,
+                sourceAgentServerId: msg.sourceAgentServerId,
+                sourceNotification: msg.sourceNotification,
+                sessionMode: msg.sessionMode,
+                activeTurnBehavior:
+                  msg.activeTurnBehavior ?? (msg.sourceAgentId ? "steer" : "interrupt"),
+              },
+              prepare: async () => {
+                if (!msg.sourceAgentId) await this.prepareAgentMessage(agentId, msg.text);
+              },
+              send: async () => {
+                try {
+                  return await send();
+                } catch (error) {
+                  if (error instanceof DeliveryRevokedError)
+                    return { status: "revoked" as const, reason: error.message, retryable: false };
+                  throw error;
+                }
+              },
+            })
+          : send();
+      const sent = scope
+        ? scope.track(async () => {
+            await perform();
           })
-        : send();
+        : perform();
       void sent.catch((error) => {
         if (deliveryStatus === "queued") {
           this.handleAgentRunError(agentId, error, "Failed to dispatch queued agent message");
@@ -8934,6 +9124,7 @@ export class Session {
     this.sessionLogger.trace({}, "agent.session.lifecycle.cleanup");
     this.isCleanedUp = true;
     this.unsubscribeSetupObservation();
+    await this.deliveryScopes.closeConnection(this.scopeConnectionId);
     await this.delivery.close();
 
     if (this.unsubscribeAgentEvents) {

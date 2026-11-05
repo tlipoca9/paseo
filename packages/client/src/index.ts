@@ -1,3 +1,13 @@
+import type {
+  AgentExecution,
+  AgentExecutionStopResult,
+  AgentExecutionGuideResult,
+} from "@getpaseo/protocol/messages";
+export type {
+  AgentExecution,
+  AgentExecutionStopResult,
+  AgentExecutionGuideResult,
+} from "@getpaseo/protocol/messages";
 export type { TerminalReplayEvent, TerminalStreamEvent } from "./terminal-stream-router.js";
 import type { AgentAddress } from "@getpaseo/protocol/addresses";
 import { parentAddressLabels } from "@getpaseo/protocol/agent-labels";
@@ -379,7 +389,21 @@ export interface PaseoAgentHandle {
    * Interrupts a running turn and returns the refreshed snapshot.
    */
   reload(options?: { requestId?: string }): Promise<PaseoAgentRefetchResult | null>;
+  captureExecution(options?: { messageId?: string }): Promise<AgentExecution | null>;
+  guideExecution(
+    execution: AgentExecution,
+    text: string,
+    options: { messageId: string },
+  ): Promise<AgentExecutionGuideResult>;
+  stopExecution(execution: AgentExecution): Promise<AgentExecutionStopResult>;
   send(text: string, options?: PaseoAgentSendOptions): Promise<void>;
+  sendWithReceipt(
+    text: string,
+    options?: PaseoAgentSendOptions,
+  ): Promise<{ deliveryStatus?: "queued" }>;
+  messageReceipt(
+    messageId: string,
+  ): Promise<import("@getpaseo/protocol/messages").AgentMessageReceipt>;
   respondToPermission(options: PaseoAgentRespondToPermissionOptions): Promise<void>;
   /** Sends a prompt and resolves when that turn finishes or needs attention. */
   run(text: string, options?: PaseoAgentRunOptions): Promise<PaseoAgentRunResult>;
@@ -500,7 +524,18 @@ export interface PaseoConfigActions {
   ): Promise<{ requestId: string; config: MutableDaemonConfig }>;
 }
 
+export interface PaseoDeliveryScopes {
+  bindExecution(
+    id: string,
+    execution: AgentExecution,
+  ): Promise<import("@getpaseo/protocol/messages").DeliveryScopeSnapshot>;
+  create(): Promise<import("@getpaseo/protocol/messages").DeliveryScopeSnapshot>;
+  get(id: string): Promise<import("@getpaseo/protocol/messages").DeliveryScopeSnapshot>;
+  revoke(id: string): Promise<import("@getpaseo/protocol/messages").DeliveryScopeSnapshot>;
+}
+
 export interface PaseoApi {
+  readonly deliveryScopes: PaseoDeliveryScopes;
   readonly hosts: PaseoHostActions;
   dispose(): Promise<void>;
   observeEvents: DaemonClient["observeEvents"];
@@ -728,6 +763,13 @@ export function createPaseoApi(
 
   return {
     dispose,
+    deliveryScopes: {
+      bindExecution: (id, execution) =>
+        daemonClient.deliveryScope({ action: "bind_execution", scopeId: id, execution }),
+      create: () => daemonClient.deliveryScope({ action: "create" }),
+      get: (id) => daemonClient.deliveryScope({ action: "get", scopeId: id }),
+      revoke: (id) => daemonClient.deliveryScope({ action: "revoke", scopeId: id }),
+    },
     hosts: createHostActions(daemonClient, { own, signal: lifetime.signal, api: createPaseoApi }),
     observeEvents,
     terminals,
@@ -981,9 +1023,20 @@ function createAgentHandleFactory(
         current = result?.agent ?? null;
         return result;
       },
+      guideExecution: (execution, text, options) =>
+        daemonClient.guideAgentExecution({
+          agentId: id,
+          execution,
+          text,
+          messageId: options.messageId,
+        }),
+      captureExecution: (options) => daemonClient.captureAgentExecution(id, options?.messageId),
+      stopExecution: (execution) => daemonClient.stopAgentExecution(id, execution),
       send: async (text, options) => {
         await daemonClient.sendAgentMessage(id, text, options);
       },
+      sendWithReceipt: (text, options) => daemonClient.sendAgentMessage(id, text, options),
+      messageReceipt: (messageId) => daemonClient.getAgentMessageReceipt(id, messageId),
       respondToPermission: async ({ requestId, response }) => {
         await daemonClient.respondToPermission(id, requestId, response);
       },

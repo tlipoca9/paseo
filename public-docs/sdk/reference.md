@@ -80,38 +80,75 @@ workspace the call creates is background too. With a `parent` and no value, the 
 
 ### Agent handle
 
-| Member                         | Result                            | Behavior                                                                                                |
-| ------------------------------ | --------------------------------- | ------------------------------------------------------------------------------------------------------- |
-| `id`                           | `string`                          | Stable daemon agent ID.                                                                                 |
-| `address`                      | `AgentAddress`                    | Complete `{ serverId, agentId }` identity; requires a connected host to establish it.                   |
-| `workspaceId`                  | `string \| null`                  | Current workspace placement.                                                                            |
-| `cwd`                          | `string \| null`                  | Current working directory.                                                                              |
-| `status`                       | Agent status or `null`            | Current lifecycle status.                                                                               |
-| `capabilities`                 | Capability flags or `null`        | What the provider session supports.                                                                     |
-| `availableModes`               | Agent modes or `null`             | Modes the session can switch to.                                                                        |
-| `pendingPermissions`           | Permission requests or `null`     | Requests waiting on an answer.                                                                          |
-| `activeTurn`                   | Active turn or `null`             | The turn in flight, with `turnId` and `startedAt`.                                                      |
-| `lastUsage`                    | Usage or `null`                   | Token counts, cost, and context-window use from the last turn.                                          |
-| `lastError`                    | `string \| null`                  | Last error the daemon recorded for the agent.                                                           |
-| `features`                     | Agent features or `null`          | Provider feature toggles and selects with their current values.                                         |
-| `runtimeInfo`                  | Runtime info or `null`            | Live provider, session ID, model, thinking option, and mode.                                            |
-| `archivedAt`                   | `string \| null`                  | Archive timestamp; `null` while the agent is active.                                                    |
-| `current()`                    | `PaseoAgent \| null`              | Current detailed value observed by this handle; never fetches.                                          |
-| `refresh(requestId?)`          | `PaseoAgentRefetchResult \| null` | Fetches the current agent and project placement.                                                        |
-| `send(text, options?)`         | `Promise<void>`                   | Resolves when the daemon accepts the prompt.                                                            |
-| `respondToPermission(options)` | `Promise<void>`                   | Answers a pending permission by `requestId` with an allow or deny `response`.                           |
-| `run(text, options?)`          | `PaseoAgentRunResult`             | Sends a prompt and waits for that turn. `timeoutMs` controls the wait; it defaults to 10 minutes.       |
-| `waitForFinish(timeoutMs?)`    | `PaseoAgentRunResult`             | Waits for the active turn, including an initial prompt. Default timeout: 10 minutes.                    |
-| `commands(options?)`           | `PaseoAgentCommandsResult`        | Asks the live session for its slash commands and skills, including built-in ones. Options: `requestId`. |
-| `subscribe(handler)`           | Unsubscribe function              | Filters agent-directory updates to this ID and refreshes the handle properties.                         |
-| `archive()`                    | `{ archivedAt }`                  | Soft-deletes the agent and closes its runtime.                                                          |
-| `detach()`                     | `Promise<void>`                   | Removes the parent relationship without stopping the agent.                                             |
+| Member                                           | Result                            | Behavior                                                                                                |
+| ------------------------------------------------ | --------------------------------- | ------------------------------------------------------------------------------------------------------- |
+| `id`                                             | `string`                          | Stable daemon agent ID.                                                                                 |
+| `address`                                        | `AgentAddress`                    | Complete `{ serverId, agentId }` identity; requires a connected host to establish it.                   |
+| `workspaceId`                                    | `string \| null`                  | Current workspace placement.                                                                            |
+| `cwd`                                            | `string \| null`                  | Current working directory.                                                                              |
+| `status`                                         | Agent status or `null`            | Current lifecycle status.                                                                               |
+| `capabilities`                                   | Capability flags or `null`        | What the provider session supports.                                                                     |
+| `availableModes`                                 | Agent modes or `null`             | Modes the session can switch to.                                                                        |
+| `pendingPermissions`                             | Permission requests or `null`     | Requests waiting on an answer.                                                                          |
+| `activeTurn`                                     | Active turn or `null`             | The turn in flight, with `turnId` and `startedAt`.                                                      |
+| `lastUsage`                                      | Usage or `null`                   | Token counts, cost, and context-window use from the last turn.                                          |
+| `lastError`                                      | `string \| null`                  | Last error the daemon recorded for the agent.                                                           |
+| `features`                                       | Agent features or `null`          | Provider feature toggles and selects with their current values.                                         |
+| `runtimeInfo`                                    | Runtime info or `null`            | Live provider, session ID, model, thinking option, and mode.                                            |
+| `archivedAt`                                     | `string \| null`                  | Archive timestamp; `null` while the agent is active.                                                    |
+| `current()`                                      | `PaseoAgent \| null`              | Current detailed value observed by this handle; never fetches.                                          |
+| `refresh(requestId?)`                            | `PaseoAgentRefetchResult \| null` | Fetches the current agent and project placement.                                                        |
+| `captureExecution({ messageId }?)`               | `AgentExecution \| null`          | Captures a submitted message's execution, or current runtime ownership when options are omitted.        |
+| `stopExecution(execution)`                       | `AgentExecutionStopResult`        | Stops only the captured execution and confirms its tools have stopped.                                  |
+| `guideExecution(execution, text, { messageId })` | `AgentExecutionGuideResult`       | Steers, or confirms stopping before continuing in the same session.                                     |
+| `send(text, options?)`                           | `Promise<void>`                   | Resolves when the daemon accepts the prompt.                                                            |
+| `sendWithReceipt(text, options?)`                | `{ deliveryStatus?: "queued" }`   | Returns the native admission stage; agent-originated messages enter the batching queue.                 |
+| `messageReceipt(messageId)`                      | `AgentMessageReceipt`             | Reads the durable outcome of a message submitted with that ID.                                          |
+| `respondToPermission(options)`                   | `Promise<void>`                   | Answers a pending permission by `requestId` with an allow or deny `response`.                           |
+| `run(text, options?)`                            | `PaseoAgentRunResult`             | Sends a prompt and waits for that turn. `timeoutMs` controls the wait; it defaults to 10 minutes.       |
+| `waitForFinish(timeoutMs?)`                      | `PaseoAgentRunResult`             | Waits for the active turn, including an initial prompt. Default timeout: 10 minutes.                    |
+| `commands(options?)`                             | `PaseoAgentCommandsResult`        | Asks the live session for its slash commands and skills, including built-in ones. Options: `requestId`. |
+| `subscribe(handler)`                             | Unsubscribe function              | Filters agent-directory updates to this ID and refreshes the handle properties.                         |
+| `archive()`                                      | `{ archivedAt }`                  | Soft-deletes the agent and closes its runtime.                                                          |
+| `detach()`                                       | `Promise<void>`                   | Removes the parent relationship without stopping the agent.                                             |
 
 `workspaceId` through `archivedAt` mirror the last snapshot the handle observed. A handle from `ref()` reads `null` for all of them until `refresh()`, `run()`, `waitForFinish()`, a timeline refetch, or `subscribe()` delivers a snapshot. Optional values in an observed snapshot also read as `null`. Call `current()` when you need the whole snapshot or need to distinguish those states.
 
 `PaseoAgentRunResult` contains `status`, `final`, `error`, and `lastMessage`. `final` refreshes the handle when present.
 
 `PaseoAgentCommandsResult` contains `agentId`, `commands`, and `error`. Each command has `name`, `description`, `argumentHint`, and an optional `kind` of `"command"` or `"skill"`. A provider that cannot answer reports it in `error` rather than rejecting; providers that expose no command list at all return an empty array.
+
+### Agent message delivery
+
+Use `sendWithReceipt(text, { messageId, sourceAgentId })` for peer messages. Save `messageId` before sending, then query `messageReceipt(messageId)` after reconnecting. `queued` confirms queue admission; `delivered` confirms native dispatch, not model readership. `unknown` means the provider outcome cannot be established, including a daemon restart between admission and receipt persistence. Retrying an unknown native receipt does not resend. `not_found` means this host has no receipt for that recipient and ID. A `failed` receipt permits resubmission only when `retryable` is true; preserve the original text, source and execution identity.
+
+Pass `expectedExecution` to bind peer delivery to a captured run. The native queue uses confirmed execution control at dispatch, and the receipt includes the resulting `execution` and `guidanceStatus`. Messages for different captured runs dispatch separately. For automatic notifications, `sourceNotification` selects the native notification envelope and `sourceAgentId` identifies its subject; the subject need not have an online session. The caller remains responsible for the notification's business meaning. Receipt queries, execution-bound peer delivery and notification envelopes require `server_info.features.agentMessageReceipts`.
+
+### Revocable plugin delivery scopes
+
+Trusted plugin connections can call `paseo.deliveryScopes.create()`, `get(id)`, and `revoke(id)`. These methods and the send option `deliveryScopeId` require `server_info.features.deliveryScopes`. Scope snapshots contain `id` and `status`: `active`, `revoking`, `revoked`, or `not_found`.
+
+Save the scope ID with automatic work and pass it to every assignment, peer message, retry and notification. A scope belongs to the plugin connection that created it; clients cannot supply a plugin identity. A replacement connection from the same plugin can inspect or revoke previous scopes, but cannot send through them. Disconnect, reload and daemon shutdown close their scopes. Scope IDs are never restored after a daemon restart.
+
+Revocation immediately closes admission, then waits for admitted operations and provider calls to settle. It cancels queued messages, including messages waiting behind another dispatch or loading a session. No new provider delivery can begin after successful revocation. Cancelled receipts have `status: "revoked"` and `retryable: false`. An operation whose provider outcome is uncertain keeps an `unknown` receipt even after the delivery barrier completes. `not_found` confirms that this daemon has no active scope with that ID; it does not confirm that a previous execution stopped.
+
+Scoped sends without `expectedExecution` only start idle sessions. Bind guidance for a running session to a captured execution; this prevents an assignment or delayed message from replacing a newer human run. Keep native `sourceAgentId` and `sourceNotification` provenance alongside the scope. Stop executions already accepted by the provider separately with `stopExecution`.
+
+Plugin agent tools receive an optional `context.execution`, captured synchronously at the host tool entrance before input parsing. It identifies the admitted run and stays unchanged across asynchronous work; `null` means no live execution was observed. Use this snapshot and the tool's cancellation signal when saving ownership. Older hosts omit it.
+
+Use `paseo.deliveryScopes.bindExecution(scopeId, context.execution)` before saving plugin ownership of an existing human-started execution. This requires `server_info.features.deliveryScopeRecovery` and a scope owned by the current trusted plugin connection. The host rejects stale execution identities and conflicting scope ownership. Scoped new turns save this recovery ownership before entering the provider. Native startup recovery skips these executions; a later unscoped turn retains normal native recovery. Bindings control recovery admission and do not confirm execution termination.
+
+### Confirmed execution control
+
+These methods require `server_info.features.agentExecutionControl`. The SDK reports a host-update error when the capability is absent. Save the captured `{ agentId, runtimeId, runId, turnId }` with your operation; provider turn IDs alone can repeat after reload. Capture rejects when this runtime has no execution ownership evidence. A completed turn remains capturable until its tools are confirmed stopped; `null` means the last observed execution was confirmed stopped.
+
+To bind work to its submitted prompt, pass a unique `messageId` to `send(text, { messageId })`, then call `captureExecution({ messageId })`. This captures that message's execution even if another prompt has since started. It rejects when the message has no unique execution record in the current runtime. Without options, capture returns the current or last observed execution.
+
+Only `stopExecution` returning `stopped` authorizes dependent work. `superseded`, `unknown`, `refused` and `timed_out` include a reason and retain the need for reconciliation. Retry with the same identity. Daemon restart loses live ownership evidence, so an old identity returns `unknown`.
+
+Guidance returns `steered` or `continued` with its resulting execution identity. Reuse `messageId` and the original identity when retrying an uncertain delivery. Native steering errors propagate as errors; only unsupported steering or an explicit `unavailable` response enters the stop-and-continue path. Provider acceptance confirms delivery, not model readership.
+
+Codex supports confirmed stopping of captured turns and their command processes. Other providers can still accept native steering; a provider without the stronger stop contract returns `unknown` instead of starting a replacement. Ordinary cancellation retains its existing behavior.
 
 ### Timeline handle
 

@@ -1,10 +1,17 @@
+import { DeliveryRevokedError, type DeliveryScope } from "../delivery-scopes.js";
+import type { AgentInputOrigin } from "@getpaseo/protocol/agent-types";
+import type { AgentExecution, AgentExecutionGuideResult } from "@getpaseo/protocol/messages";
 import type { PromptDispatchDisposition } from "../agent-prompt.js";
 import { randomUUID } from "node:crypto";
 import type { AgentPromptInput, AgentPromptContentBlock } from "../agent-sdk-types.js";
 import { prepareAgentMessage, type AgentPromptSource } from "./envelope.js";
 
 interface Message {
+  deliveryScope?: DeliveryScope;
+  inputOrigin?: AgentInputOrigin;
   recipientId: string;
+  expectedExecution?: AgentExecution;
+  onExecutionGuided?: (result: AgentExecutionGuideResult) => void;
   messageId?: string;
   source: AgentPromptSource;
   prompt: AgentPromptInput;
@@ -21,12 +28,18 @@ interface Receipt {
   dispatched: Promise<PromptDispatchDisposition>;
 }
 interface Admitted extends Message {
+  started?: boolean;
+  revoked?: boolean;
   receipt: Receipt;
   resolve(disposition: PromptDispatchDisposition): void;
   reject(error: unknown): void;
 }
 interface DispatchRequest {
+  deliveryScope?: DeliveryScope;
+  inputOrigin?: AgentInputOrigin;
   recipientId: string;
+  expectedExecution?: AgentExecution;
+  onExecutionGuided?: (result: AgentExecutionGuideResult) => void;
   messageIds: readonly string[];
   prompt: AgentPromptInput;
   activeTurnBehavior: "steer" | "interrupt";
@@ -65,39 +78,52 @@ export function createAgentMessageDelivery(dependencies: Dependencies): AgentMes
   let closing: Promise<void> | undefined;
 
   function dispatch(recipientId: string, messages: Admitted[]): void {
-    const prompts = messages.map(
-      (message) =>
-        prepareAgentMessage(message.prompt, message.source, message.receipt.messageId).prompt,
-    );
-    const prompt: AgentPromptInput = prompts.every((entry) => typeof entry === "string")
-      ? prompts.join("\n\n")
-      : prompts.flatMap((entry): AgentPromptContentBlock[] =>
-          typeof entry === "string" ? [{ type: "text", text: entry }] : entry,
-        );
-    const request: DispatchRequest = {
-      recipientId,
-      messageIds: messages.map((message) => message.receipt.messageId),
-      prompt,
-      activeTurnBehavior: messages[0]!.activeTurnBehavior ?? "steer",
-      sessionMode: messages.find((message) => message.sessionMode)?.sessionMode,
-      clearPendingPermissions: messages.some((message) => message.clearPendingPermissions),
-      unarchive: messages.some((message) => message.unarchive !== false),
-      onDispatch: (disposition) => {
-        for (const message of messages) {
-          try {
-            message.onDispatch?.(disposition);
-          } catch (error) {
-            dependencies.onError(error, request);
-          }
-        }
-      },
-    };
     const previous = dispatching.get(recipientId) ?? Promise.resolve();
     const dispatched = previous
       .catch(() => undefined)
       .then(async () => {
+        messages = messages.filter((message) => !message.revoked);
+        if (!messages.length) return undefined;
+        for (const message of messages) message.started = true;
+        const prompts = messages.map(
+          (message) =>
+            prepareAgentMessage(message.prompt, message.source, message.receipt.messageId).prompt,
+        );
+        const prompt: AgentPromptInput = prompts.every((entry) => typeof entry === "string")
+          ? prompts.join("\n\n")
+          : prompts.flatMap((entry): AgentPromptContentBlock[] =>
+              typeof entry === "string" ? [{ type: "text", text: entry }] : entry,
+            );
+        const request: DispatchRequest = {
+          recipientId,
+          deliveryScope: messages[0]!.deliveryScope,
+          inputOrigin: messages[0]!.inputOrigin,
+          expectedExecution: messages[0]!.expectedExecution,
+          onExecutionGuided: (result) => {
+            for (const message of messages) message.onExecutionGuided?.(result);
+          },
+          messageIds: messages.map((message) => message.receipt.messageId),
+          prompt,
+          activeTurnBehavior: messages[0]!.activeTurnBehavior ?? "steer",
+          sessionMode: messages.find((message) => message.sessionMode)?.sessionMode,
+          clearPendingPermissions: messages.some((message) => message.clearPendingPermissions),
+          unarchive: messages.some((message) => message.unarchive !== false),
+          onDispatch: (disposition) => {
+            for (const message of messages) {
+              try {
+                message.onDispatch?.(disposition);
+              } catch (error) {
+                dependencies.onError(error, request);
+              }
+            }
+          },
+        };
+
         try {
-          for (const message of messages) message.beforeDispatch?.();
+          for (const message of messages) {
+            message.deliveryScope?.assertActive();
+            message.beforeDispatch?.();
+          }
           const disposition = await dependencies.dispatch(request);
           for (const message of messages) message.resolve(disposition);
           return undefined;
@@ -126,8 +152,11 @@ export function createAgentMessageDelivery(dependencies: Dependencies): AgentMes
       // Explicitly conflicting send options require separate, ordered dispatches.
       if (
         group.length &&
-        ((message.activeTurnBehavior ?? "steer") !== (group[0]!.activeTurnBehavior ?? "steer") ||
-          (mode && message.sessionMode && mode !== message.sessionMode))
+        (Boolean(message.deliveryScope) ||
+          Boolean(group[0]!.deliveryScope) ||
+          (message.activeTurnBehavior ?? "steer") !== (group[0]!.activeTurnBehavior ?? "steer") ||
+          (mode && message.sessionMode && mode !== message.sessionMode) ||
+          JSON.stringify(message.expectedExecution) !== JSON.stringify(group[0]!.expectedExecution))
       ) {
         dispatch(recipientId, group);
         group = [];
@@ -157,7 +186,20 @@ export function createAgentMessageDelivery(dependencies: Dependencies): AgentMes
       };
       const entry = pending.get(message.recipientId) ?? { messages: [], cancel: () => {} };
       entry.cancel();
-      entry.messages.push({ ...message, receipt, resolve, reject });
+      const admitted: Admitted = { ...message, receipt, resolve, reject };
+      const revoked = () => {
+        if (admitted.started) return;
+        admitted.revoked = true;
+        reject(new DeliveryRevokedError());
+      };
+      if (message.deliveryScope) {
+        message.deliveryScope.signal.addEventListener("abort", revoked, { once: true });
+        void dispatched
+          .finally(() => message.deliveryScope!.signal.removeEventListener("abort", revoked))
+          .catch(() => undefined);
+        if (message.deliveryScope.signal.aborted) revoked();
+      }
+      entry.messages.push(admitted);
       entry.cancel = schedule(2000, () => flush(message.recipientId));
       pending.set(message.recipientId, entry);
       return receipt;

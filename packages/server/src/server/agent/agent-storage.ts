@@ -1,3 +1,4 @@
+import { ExecutionRecoveryError } from "./restart-recovery/ownership.js";
 import { promises as fs, type Dirent } from "node:fs";
 import path from "node:path";
 import { z } from "zod";
@@ -55,6 +56,12 @@ const STORED_AGENT_SCHEMA = z.object({
   labels: z.record(z.string(), z.string()).default({}),
   lastStatus: AgentStatusSchema.default("closed"),
   resumeOnStartup: z.boolean().optional(),
+  executionRecovery: z
+    .object({
+      runId: z.string(),
+      scope: z.object({ id: z.string(), pluginId: z.string() }).optional(),
+    })
+    .optional(),
   lastModeId: z.string().nullable().optional(),
   config: SERIALIZABLE_CONFIG_SCHEMA,
   launchEnv: z.record(z.string(), z.string()).optional(),
@@ -95,6 +102,17 @@ export type SerializableAgentConfig = Pick<
 export type StoredAgentRecord = z.infer<typeof STORED_AGENT_SCHEMA>;
 export function parseStoredAgentRecord(value: unknown): StoredAgentRecord {
   return STORED_AGENT_SCHEMA.parse(value);
+}
+
+interface ExecutionAdmission {
+  agentId: string;
+  execution: NonNullable<StoredAgentRecord["executionRecovery"]>;
+  expectedRunId?: string | null;
+}
+interface ExecutionScopeBinding {
+  agentId: string;
+  runId: string;
+  scope: NonNullable<NonNullable<StoredAgentRecord["executionRecovery"]>["scope"]>;
 }
 
 export class AgentStorage {
@@ -384,9 +402,47 @@ export class AgentStorage {
       }
       // Background is fixed at creation; a runtime opened without it cannot clear it.
       if (existing?.background) record.background = true;
+      record.executionRecovery = existing?.executionRecovery;
       record.resumeOnStartup =
         existing?.resumeOnStartup && agent.lifecycle !== "idle" && agent.lifecycle !== "error";
       return record;
+    });
+  }
+
+  async consumeRestartRecovery(agentId: string): Promise<StoredAgentRecord | null> {
+    await this.load();
+    let candidate: StoredAgentRecord | null = null;
+    await this.queueRecordMutation(agentId, (record) => {
+      if (!record) throw new ExecutionRecoveryError({ reason: "unavailable", agentId });
+      if (record.resumeOnStartup) candidate = record;
+      return { ...record, resumeOnStartup: false };
+    });
+    return candidate;
+  }
+
+  async admitExecution({ agentId, execution, expectedRunId }: ExecutionAdmission): Promise<void> {
+    await this.load();
+    await this.queueRecordMutation(agentId, (record) => {
+      if (!record) throw new ExecutionRecoveryError({ reason: "unavailable", agentId });
+      const expectedExecutionChanged = (record.executionRecovery?.runId ?? null) !== expectedRunId;
+      const recoveryOwnedByPlugin = Boolean(record.executionRecovery?.scope);
+      const staleRecovery =
+        expectedRunId !== undefined && (expectedExecutionChanged || recoveryOwnedByPlugin);
+      if (staleRecovery)
+        throw new ExecutionRecoveryError({ reason: "superseded", agentId, runId: execution.runId });
+      return { ...record, executionRecovery: execution, resumeOnStartup: false };
+    });
+  }
+
+  async bindExecutionScope({ agentId, runId, scope }: ExecutionScopeBinding): Promise<void> {
+    await this.load();
+    await this.queueRecordMutation(agentId, (record) => {
+      if (!record || record.executionRecovery?.runId !== runId)
+        throw new ExecutionRecoveryError({ reason: "superseded", agentId, runId });
+      const owner = record.executionRecovery.scope;
+      if (owner && (owner.id !== scope.id || owner.pluginId !== scope.pluginId))
+        throw new ExecutionRecoveryError({ reason: "scope_conflict", agentId, runId });
+      return { ...record, executionRecovery: { runId, scope }, resumeOnStartup: false };
     });
   }
 

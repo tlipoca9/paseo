@@ -2157,3 +2157,47 @@ export default function contribute() {
     await runtime.stopAll();
   }
 });
+
+it.each(["resolve", "reject"])(
+  "drops a late RPC %s after subprocess shutdown",
+  async (settlement) => {
+    const directory = await createPlugin(
+      "late-rpc",
+      `
+import { defineRpc } from "@getpaseo/plugin";
+import { z } from "zod";
+export default function contribute(server) {
+  let settle;
+  const pending = new Promise((resolve, reject) => { settle = () => ${settlement === "resolve" ? 'resolve("done")' : 'reject(new Error("late failure"))'}; });
+  server.handle(defineRpc({ name: "wait", input: z.object({}), output: z.string() }), () => {
+    console.log("handler entered");
+    return pending;
+  });
+  return () => { process.once("disconnect", settle); };
+}`,
+    );
+    let exited!: Promise<number | null>;
+    const runtime = createTestRuntime({
+      spawnChild: () => {
+        const child = spawnObservedPluginProcess(() => {});
+        exited = new Promise((resolve) => child.once("exit", resolve));
+        return child;
+      },
+    });
+    try {
+      await runtime.startPlugin("late-rpc", directory);
+      const pending = expect(runtime.invoke("late-rpc", "wait", {})).rejects.toThrow(
+        "Plugin stopped",
+      );
+      await expect.poll(() => pluginMessages(runtime, "late-rpc")).toContain("handler entered");
+      await runtime.stopPluginById("late-rpc");
+      await pending;
+      expect(await exited).toBe(0);
+      expect(pluginMessages(runtime, "late-rpc").join("\n")).not.toMatch(
+        /ERR_IPC_CHANNEL_CLOSED|Unhandled/,
+      );
+    } finally {
+      await runtime.stopAll();
+    }
+  },
+);

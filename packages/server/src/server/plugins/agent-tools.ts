@@ -1,3 +1,4 @@
+import type { AgentExecution } from "@getpaseo/protocol/messages";
 import { z } from "zod";
 import type {
   AgentToolDefinition,
@@ -37,6 +38,7 @@ export interface PluginAgentToolsRuntime {
     name: string,
     input: unknown,
     signal?: AbortSignal,
+    execution?: AgentExecution | null,
   ): Promise<AgentToolResult>;
 }
 
@@ -88,6 +90,7 @@ export class PluginAgentTools {
     name: string,
     input: unknown,
     paseo: PluginHookContext["paseo"],
+    execution?: AgentExecution | null,
   ): Promise<AgentToolResult> {
     const controller = new AbortController();
     this.calls.set(requestId, { agentId: agent.id, controller });
@@ -96,7 +99,12 @@ export class PluginAgentTools {
       if (!tool) throw new Error(`Agent tool not attached: ${name}`);
       const parsed = await tool.input.parseAsync(input);
       controller.signal.throwIfAborted();
-      const result = await tool.execute(parsed, { agent, paseo, signal: controller.signal });
+      const result = await tool.execute(parsed, {
+        agent,
+        paseo,
+        execution,
+        signal: controller.signal,
+      });
       controller.signal.throwIfAborted();
       return result;
     } catch (error) {

@@ -165,10 +165,11 @@ export class PluginService {
     name,
     input,
     signal,
+    execution,
   ) => {
     if (!this.isToolPluginAvailable(pluginId, pluginInstanceId) || !this.runtime.callTool)
       return { isError: true, text: `Plugin is not available: ${pluginId}` };
-    return this.runtime.callTool(pluginId, pluginInstanceId, agent, name, input, signal);
+    return this.runtime.callTool(pluginId, pluginInstanceId, agent, name, input, signal, execution);
   };
 
   readonly wait: PluginLifecycle["wait"] = async (name, payload) => {

@@ -372,3 +372,79 @@ describe("an interrupted Codex turn's commands end before the next turn", () => 
     expect(harness.terminated()).toEqual(["201", "202"]);
   }, 15_000);
 });
+
+test("confirmed stop waits for the captured Codex turn's terminal processes", async () => {
+  const terminated = deferred();
+  const harness = createHarness({
+    terminate: () => terminated.promise.then(() => ({ terminated: true })),
+  });
+  await harness.startTurn("run a command", "native-confirmed");
+  await harness.runsCommand({ turnId: "native-confirmed", processId: "201" });
+  let confirmed = false;
+  const stopping = harness.session.stopTurn!("codex-turn-0").then(() => {
+    confirmed = true;
+    return;
+  });
+  await vi.waitFor(() => expect(harness.terminated()).toEqual(["201"]));
+  expect(confirmed).toBe(false);
+  terminated.resolve();
+  await stopping;
+  expect(confirmed).toBe(true);
+});
+
+test("confirmed stop still owns commands after the captured turn completes", async () => {
+  const harness = createHarness();
+  await harness.startTurn("start a persistent command", "native-finished");
+  await harness.runsCommand({ turnId: "native-finished", processId: "201" });
+  await harness.completesTurn();
+  await harness.session.stopTurn!("codex-turn-0");
+  expect(harness.terminated()).toEqual(["201"]);
+});
+
+test("confirmed stop reports terminal cleanup failure and retries the same execution", async () => {
+  let refused = true;
+  const harness = createHarness({
+    terminate: () =>
+      refused
+        ? { __jsonRpcError: { code: -32600, message: "tool is still running" } }
+        : { terminated: true },
+  });
+  await harness.startTurn("run a command", "native-failure");
+  await harness.runsCommand({ turnId: "native-failure", processId: "201" });
+  await expect(harness.session.stopTurn!("codex-turn-0")).rejects.toThrow("tool is still running");
+  refused = false;
+  await expect(harness.session.stopTurn!("codex-turn-0")).resolves.toBeUndefined();
+  expect(harness.terminated()).toEqual(["201", "201"]);
+});
+
+test("a late terminal event from the stopped turn cannot settle its continuation", async () => {
+  const harness = createHarness();
+  await harness.startTurn("first", "native-first");
+  await harness.session.stopTurn!("codex-turn-0");
+  await harness.startTurn("continuation", "native-next");
+  harness.appServer.child.stdout.write(
+    JSON.stringify({
+      method: "turn/completed",
+      params: { threadId: THREAD, turn: { id: "native-first", status: "interrupted" } },
+    }) + "\n",
+  );
+  await harness.runsCommand({ turnId: "native-next", processId: "301" });
+  await expect(harness.session.startTurn("must not replace continuation")).rejects.toThrow(
+    "already active",
+  );
+});
+
+test("stopping an older Codex execution leaves the later human turn and its commands running", async () => {
+  const harness = createHarness();
+  await harness.startTurn("start a persistent command", "native-old");
+  await harness.runsCommand({ turnId: "native-old", processId: "201" });
+  await harness.completesTurn();
+  await harness.startTurn("human follow-up", "native-human");
+  await harness.runsCommand({ turnId: "native-human", processId: "301" });
+  await harness.session.stopTurn!("codex-turn-0");
+  expect(harness.terminated()).toEqual(["201"]);
+  expect(harness.requests("turn/interrupt")).toEqual([]);
+  await expect(harness.session.startTurn("must not replace human")).rejects.toThrow(
+    "already active",
+  );
+});

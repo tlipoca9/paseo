@@ -1,4 +1,5 @@
 import type {
+  AgentInputOrigin,
   AgentFeature,
   AgentFeatureSelect,
   AgentFeatureToggle,
@@ -197,10 +198,13 @@ export type AgentPromptContentBlock =
 export type AgentPromptInput = string | AgentPromptContentBlock[];
 
 export interface AgentRunOptions {
+  deliveryScope?: import("./delivery-scopes.js").DeliveryScope;
+  restartRecovery?: { runId: string | null };
   outputSchema?: unknown;
   resumeFrom?: AgentPersistenceHandle;
   maxThinkingTokens?: number;
   clientMessageId?: string;
+  inputOrigin?: AgentInputOrigin;
 }
 
 export interface AgentSteerOptions extends AgentRunOptions {
@@ -398,7 +402,13 @@ export interface PluginTimelineItem {
 }
 
 export type AgentTimelineItem =
-  | { type: "user_message"; text: string; messageId?: string; clientMessageId?: string }
+  | {
+      type: "user_message";
+      text: string;
+      messageId?: string;
+      clientMessageId?: string;
+      origin?: AgentInputOrigin;
+    }
   | { type: "assistant_message"; text: string; messageId?: string }
   | { type: "reasoning"; text: string }
   | ToolCallTimelineItem
@@ -705,6 +715,9 @@ export interface AgentSession {
    * still uncertain.
    */
   interrupt(): Promise<void>;
+  /** Confirm the captured turn and every tool it started can no longer execute.
+   * Must target this turn even if a later turn exists. Reject if confirmation fails. */
+  stopTurn?(turnId: string): Promise<void>;
   /** True only when releasing this runtime loses no background work or pending replies.
    * An optional additional veto: missing methods use daemon baseline eligibility;
    * implemented checks that reject or return false keep the runtime resident. */

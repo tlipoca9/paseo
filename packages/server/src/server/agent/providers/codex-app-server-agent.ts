@@ -2576,6 +2576,7 @@ type ParsedCodexNotification =
   | { kind: "turn_started"; turnId: string; threadId: string | null }
   | {
       kind: "turn_completed";
+      turnId?: string;
       status: string;
       errorMessage: string | null;
       threadId: string | null;
@@ -2728,6 +2729,7 @@ const CodexNotificationSchema = z.union([
     .transform(
       ({ params }): ParsedCodexNotification => ({
         kind: "turn_completed",
+        turnId: params.turn.id,
         status: params.turn.status,
         errorMessage: params.turn.error?.message ?? null,
         threadId: params.threadId ?? null,
@@ -3528,6 +3530,11 @@ export class CodexAppServerAgentSession implements AgentSession {
     string,
     { processIds: Set<string>; terminatedProcessIds: Set<string>; interruptAccepted: boolean }
   >();
+  private readonly executionTurns = new Map<
+    string,
+    { nativeTurnId: string; terminal: Promise<void>; finish: () => void }
+  >();
+  private readonly terminalStopFailures = new Map<string, Map<string, Error>>();
   private interruptedTurnCleanup: Promise<void> | null = null;
   private pendingUnlabeledTerminalInteractions = new Map<
     string,
@@ -5125,6 +5132,32 @@ export class CodexAppServerAgentSession implements AgentSession {
     }
   }
 
+  async stopTurn(turnId: string): Promise<void> {
+    await this.pendingNotifications;
+    const execution = this.executionTurns.get(turnId);
+    const client = this.client;
+    const threadId = this.currentThreadId;
+    if (
+      !execution ||
+      !client ||
+      !threadId ||
+      !this.terminalProcessIdsByTurnId.has(execution.nativeTurnId)
+    )
+      throw new Error("Codex execution ownership is unavailable.");
+    const wasActive = this.activeForegroundTurnId === turnId;
+    if (wasActive) await this.interrupt();
+    await execution.terminal;
+    await this.pendingNotifications;
+    while (this.interruptedTurnCleanup) await this.interruptedTurnCleanup;
+    if (!wasActive)
+      await this.endInterruptedTurnProcesses(client, threadId, execution.nativeTurnId);
+    await this.pendingNotifications;
+    while (this.interruptedTurnCleanup) await this.interruptedTurnCleanup;
+    const failures = this.terminalStopFailures.get(execution.nativeTurnId);
+    if (failures?.size)
+      throw new Error([...failures.values()].map((error) => error.message).join("; "));
+  }
+
   async canStopRuntime(): Promise<boolean> {
     if (
       !this.client ||
@@ -5178,7 +5211,8 @@ export class CodexAppServerAgentSession implements AgentSession {
     if (parsed.kind === "item_completed") {
       // Only a completed command has exited. A failed one can still be running:
       // Codex reports an interrupted turn's live command as failed.
-      if (parsed.item.status === "completed") record?.processIds.delete(processId);
+      if (parsed.item.status === "completed" && typeof parsed.item.exitCode === "number")
+        record?.processIds.delete(processId);
       return;
     }
     const current = record ?? this.getTurnTerminalRecord(parsed.turnId);
@@ -5204,6 +5238,10 @@ export class CodexAppServerAgentSession implements AgentSession {
     for (const oldestTurnId of this.terminalProcessIdsByTurnId.keys()) {
       if (this.terminalProcessIdsByTurnId.size <= INTERRUPTED_TURN_TRACKED_TURNS) break;
       this.terminalProcessIdsByTurnId.delete(oldestTurnId);
+      this.terminalStopFailures.delete(oldestTurnId);
+      for (const [executionId, execution] of this.executionTurns) {
+        if (execution.nativeTurnId === oldestTurnId) this.executionTurns.delete(executionId);
+      }
     }
     return record;
   }
@@ -5243,11 +5281,17 @@ export class CodexAppServerAgentSession implements AgentSession {
             { threadId, processId },
             INTERRUPTED_TURN_TERMINATE_TIMEOUT_MS,
           );
+          const confirmation = z.object({ terminated: z.boolean() }).parse(response);
+          this.terminalStopFailures.get(turnId)?.delete(processId);
           this.logger.info(
-            { ...logContext, processId, terminated: toObjectRecord(response)?.terminated ?? null },
+            { ...logContext, processId, terminated: confirmation.terminated },
             "provider.codex.interrupt.terminal_terminated",
           );
         } catch (error) {
+          record.terminatedProcessIds.delete(processId);
+          const failures = this.terminalStopFailures.get(turnId) ?? new Map<string, Error>();
+          failures.set(processId, error instanceof Error ? error : new Error(String(error)));
+          this.terminalStopFailures.set(turnId, failures);
           this.logger.warn(
             { ...logContext, processId, err: error },
             "provider.codex.interrupt.terminal_terminate_failed",
@@ -6370,6 +6414,18 @@ export class CodexAppServerAgentSession implements AgentSession {
     }
     this.markCurrentThreadSaved(parsed.threadId);
     this.currentTurnId = parsed.turnId;
+    this.getTurnTerminalRecord(parsed.turnId);
+    if (this.activeForegroundTurnId) {
+      let finish!: () => void;
+      const terminal = new Promise<void>((resolve) => {
+        finish = resolve;
+      });
+      this.executionTurns.set(this.activeForegroundTurnId, {
+        nativeTurnId: parsed.turnId,
+        terminal,
+        finish,
+      });
+    }
     const pendingIdentification = this.pendingForegroundTurnIdentification;
     if (
       pendingIdentification &&
@@ -6408,12 +6464,11 @@ export class CodexAppServerAgentSession implements AgentSession {
       this.emitSubAgentActivityUpdate(subAgentCallId, status);
       return;
     }
+    if (parsed.turnId && parsed.turnId !== this.currentTurnId) return;
     this.completePendingRootCompactions();
-    // What a turn that was not interrupted leaves running, it left on purpose; no later
-    // interrupt may end it.
-    if (parsed.status !== "interrupted" && this.currentTurnId) {
-      this.terminalProcessIdsByTurnId.delete(this.currentTurnId);
-    }
+    // Keep the turn's process ownership for an explicit captured-execution stop.
+    // Ordinary interruption still selects only the current turn.
+    if (this.activeForegroundTurnId) this.executionTurns.get(this.activeForegroundTurnId)?.finish();
     if (parsed.status === "failed") {
       this.emitEvent({
         type: "turn_failed",

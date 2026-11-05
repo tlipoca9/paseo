@@ -825,7 +825,13 @@ function createToolCatalog(
       if (!tool) {
         throw new PaseoToolInputError(`Paseo tool not found: ${name}`);
       }
-      return tool.handler(await parseToolInput(tool, input), context);
+      context.signal?.throwIfAborted();
+      const execution = callerAgentId
+        ? (agentManager.captureToolExecution?.(callerAgentId) ?? null)
+        : null;
+      const parsed = await parseToolInput(tool, input);
+      context.signal?.throwIfAborted();
+      return tool.handler(parsed, { ...context, execution });
     },
   });
 

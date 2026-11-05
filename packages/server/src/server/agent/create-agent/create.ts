@@ -19,7 +19,7 @@ import type { ProviderSnapshotManager } from "../provider-snapshot-manager.js";
 import { startCreatedAgentInitialPrompt } from "../agent-prompt.js";
 import { resolveCreateAgentTitles } from "../create-agent-title.js";
 import { buildAgentPrompt } from "../prompt-attachments.js";
-import { normalizeClientMessageId, resolveClientMessageId } from "../../client-message-id.js";
+import { resolveClientMessageId } from "../../client-message-id.js";
 import { resolveRequiredProviderModel, type ResolvedProviderModel } from "../mcp-shared.js";
 import {
   inheritAgentBackground,
@@ -63,6 +63,7 @@ export interface CreateAgentFromSessionInput {
   initialPrompt?: string;
   source?: AgentPromptSource;
   clientMessageId?: string;
+  inputOrigin?: AgentRunOptions["inputOrigin"];
   outputSchema?: Record<string, unknown>;
   images?: Array<{ data: string; mimeType: string }>;
   attachments?: AgentAttachment[];
@@ -247,12 +248,13 @@ async function resolveSessionCreateAgent(
   };
   const prompt = buildAgentPrompt(trimmedPrompt ?? "", input.images, input.attachments);
   const hasPromptContent = Array.isArray(prompt) ? prompt.length > 0 : prompt.length > 0;
-  const clientMessageId = normalizeClientMessageId(input.clientMessageId);
+  const clientMessageId = resolveClientMessageId(input.clientMessageId);
   const runOptions: AgentRunOptions | undefined =
-    input.outputSchema || clientMessageId
+    input.outputSchema || clientMessageId || input.inputOrigin
       ? {
           ...(input.outputSchema ? { outputSchema: input.outputSchema } : {}),
           ...(clientMessageId ? { clientMessageId } : {}),
+          ...(input.inputOrigin ? { inputOrigin: input.inputOrigin } : {}),
         }
       : undefined;
   const workspaceId = input.workspaceId;

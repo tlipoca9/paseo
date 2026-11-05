@@ -34,6 +34,10 @@ Paseo uses **file-based JSON persistence** instead of a traditional database. Al
 
 All server-side stores live under `$PASEO_HOME` (defaults to `~/.paseo`).
 
+The agent record's optional `executionRecovery` stores the admitted `runId` and optional
+`scope: { id, pluginId }`. Snapshot writes preserve it; execution admission and trusted binding own
+its updates. See [restart recovery](agent-lifecycle.md#daemon-restart-recovery) for its lifecycle.
+
 ## Store Surface Rules
 
 Store APIs own persistence atomicity and should not make services coordinate raw reads and writes. A good store method maps cleanly to one SQL statement or one SQL transaction, even when the current implementation is JSON files. If a caller needs a queue, lock, read-merge-write loop, or uniqueness race workaround, that behavior belongs behind the store surface.

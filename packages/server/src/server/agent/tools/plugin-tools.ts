@@ -27,8 +27,14 @@ export function registerPluginTools(options: {
       title: tool.title,
       description: tool.description,
       inputSchema: z.fromJSONSchema(tool.inputSchema),
-      async handler(input, { signal }) {
-        const result = await agentManager.executePluginTool(tool, callerAgentId, input, signal);
+      async handler(input, { signal, execution }) {
+        const result = await agentManager.executePluginTool(
+          tool,
+          callerAgentId,
+          input,
+          signal,
+          execution,
+        );
         return addModelVisibleStructuredContent({
           content: result.text === undefined ? [] : [{ type: "text", text: result.text }],
           structuredContent: result.structuredContent,

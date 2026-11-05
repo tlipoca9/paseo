@@ -720,6 +720,12 @@ export const AgentTimelineItemPayloadSchema: z.ZodType<AgentTimelineItem, unknow
     text: z.string(),
     messageId: z.string().optional(),
     clientMessageId: z.string().optional(),
+    origin: z
+      .discriminatedUnion("kind", [
+        z.object({ kind: z.literal("human") }),
+        z.object({ kind: z.literal("plugin"), pluginId: z.string() }),
+      ])
+      .optional(),
   }),
   z.object({
     type: z.literal("assistant_message"),
@@ -1422,7 +1428,15 @@ export const FetchAgentRequestMessageSchema = z.object({
   agentId: z.string(),
 });
 
+export const AgentExecutionSchema = z.object({
+  agentId: z.string(),
+  runtimeId: z.string(),
+  runId: z.string(),
+  turnId: z.string().nullable(),
+});
+export type AgentExecution = z.infer<typeof AgentExecutionSchema>;
 export const SendAgentMessageRequestSchema = z.object({
+  deliveryScopeId: z.string().min(1).optional(),
   type: z.literal("send_agent_message_request"),
   requestId: z.string(),
   /** Accepts full ID, unique prefix, or exact full title (server resolves). */
@@ -1431,6 +1445,8 @@ export const SendAgentMessageRequestSchema = z.object({
   /** Opaque sender identity for agent-originated prompts. */
   sourceAgentId: z.string().min(1).optional(),
   sourceAgentServerId: z.string().min(1).optional(),
+  sourceNotification: z.enum(["finished", "errored", "permission-required", "closed"]).optional(),
+  expectedExecution: AgentExecutionSchema.optional(),
   sessionMode: z.string().optional(),
   messageId: z.string().optional(), // Client-provided ID for deduplication
   activeTurnBehavior: ActiveTurnBehaviorSchema.optional(),
@@ -2108,6 +2124,140 @@ export const AgentDetachRequestMessageSchema = z.object({
 export const AgentDetachResponseMessageSchema = z.object({
   type: z.literal("agent.detach.response"),
   payload: AgentActionResponsePayloadSchema,
+});
+
+export const DeliveryScopeSchema = z.object({
+  id: z.string(),
+  status: z.enum(["active", "revoking", "revoked", "not_found"]),
+});
+export type DeliveryScopeSnapshot = z.infer<typeof DeliveryScopeSchema>;
+const DeliveryScopeCreateOperationSchema = z.object({ action: z.literal("create") });
+const DeliveryScopeGetOperationSchema = z.object({ action: z.literal("get"), scopeId: z.string() });
+const DeliveryScopeRevokeOperationSchema = z.object({
+  action: z.literal("revoke"),
+  scopeId: z.string(),
+});
+const DeliveryScopeBindOperationSchema = z.object({
+  action: z.literal("bind_execution"),
+  scopeId: z.string(),
+  execution: AgentExecutionSchema,
+});
+export const DeliveryScopeOperationSchema = z.discriminatedUnion("action", [
+  DeliveryScopeCreateOperationSchema,
+  DeliveryScopeGetOperationSchema,
+  DeliveryScopeRevokeOperationSchema,
+  DeliveryScopeBindOperationSchema,
+]);
+export type DeliveryScopeOperation = z.infer<typeof DeliveryScopeOperationSchema>;
+export const DeliveryScopeRequestSchema = z.discriminatedUnion("type", [
+  DeliveryScopeCreateOperationSchema.omit({ action: true }).extend({
+    type: z.literal("delivery.scope.create.request"),
+    requestId: z.string(),
+  }),
+  DeliveryScopeGetOperationSchema.omit({ action: true }).extend({
+    type: z.literal("delivery.scope.get.request"),
+    requestId: z.string(),
+  }),
+  DeliveryScopeRevokeOperationSchema.omit({ action: true }).extend({
+    type: z.literal("delivery.scope.revoke.request"),
+    requestId: z.string(),
+  }),
+  DeliveryScopeBindOperationSchema.omit({ action: true }).extend({
+    type: z.literal("delivery.scope.bind_execution.request"),
+    requestId: z.string(),
+  }),
+]);
+export type DeliveryScopeRequest = z.infer<typeof DeliveryScopeRequestSchema>;
+const DeliveryScopeResponsePayloadSchema = z.object({
+  requestId: z.string(),
+  scope: DeliveryScopeSchema,
+});
+export const DeliveryScopeResponseSchema = z.discriminatedUnion("type", [
+  z.object({
+    type: z.literal("delivery.scope.create.response"),
+    payload: DeliveryScopeResponsePayloadSchema,
+  }),
+  z.object({
+    type: z.literal("delivery.scope.get.response"),
+    payload: DeliveryScopeResponsePayloadSchema,
+  }),
+  z.object({
+    type: z.literal("delivery.scope.revoke.response"),
+    payload: DeliveryScopeResponsePayloadSchema,
+  }),
+  z.object({
+    type: z.literal("delivery.scope.bind_execution.response"),
+    payload: DeliveryScopeResponsePayloadSchema,
+  }),
+]);
+
+export const AgentMessageReceiptSchema = z.object({
+  guidanceStatus: z
+    .enum(["steered", "continued", "superseded", "unknown", "refused", "timed_out"])
+    .optional(),
+  status: z.enum(["not_found", "queued", "delivered", "failed", "unknown", "revoked"]),
+  reason: z.string().optional(),
+  retryable: z.boolean().optional(),
+  execution: AgentExecutionSchema.optional(),
+});
+export type AgentMessageReceipt = z.infer<typeof AgentMessageReceiptSchema>;
+export const AgentMessageReceiptRequestSchema = z.object({
+  type: z.literal("agent.message.get_receipt.request"),
+  agentId: z.string(),
+  messageId: z.string(),
+  requestId: z.string(),
+});
+export const AgentMessageReceiptResponseSchema = z.object({
+  type: z.literal("agent.message.get_receipt.response"),
+  payload: z.object({ requestId: z.string(), receipt: AgentMessageReceiptSchema }),
+});
+
+export const AgentExecutionStopResultSchema = z.object({
+  status: z.enum(["stopped", "superseded", "unknown", "refused", "timed_out"]),
+  reason: z.string().optional(),
+});
+export type AgentExecutionStopResult = z.infer<typeof AgentExecutionStopResultSchema>;
+export const AgentExecutionGuideResultSchema = z.object({
+  status: z.enum(["steered", "continued", "superseded", "unknown", "refused", "timed_out"]),
+  reason: z.string().optional(),
+  execution: AgentExecutionSchema.optional(),
+});
+export type AgentExecutionGuideResult = z.infer<typeof AgentExecutionGuideResultSchema>;
+export const AgentExecutionGuideRequestSchema = z.object({
+  type: z.literal("agent.execution.guide.request"),
+  agentId: z.string(),
+  execution: AgentExecutionSchema,
+  text: z.string().min(1),
+  messageId: z.string().min(1),
+  requestId: z.string(),
+});
+export type AgentExecutionGuideInput = Omit<
+  z.infer<typeof AgentExecutionGuideRequestSchema>,
+  "type" | "requestId"
+>;
+export const AgentExecutionGuideResponseSchema = z.object({
+  type: z.literal("agent.execution.guide.response"),
+  payload: z.object({ requestId: z.string(), result: AgentExecutionGuideResultSchema }),
+});
+export const AgentExecutionCaptureRequestSchema = z.object({
+  type: z.literal("agent.execution.capture.request"),
+  agentId: z.string(),
+  messageId: z.string().optional(),
+  requestId: z.string(),
+});
+export const AgentExecutionCaptureResponseSchema = z.object({
+  type: z.literal("agent.execution.capture.response"),
+  payload: z.object({ requestId: z.string(), execution: AgentExecutionSchema.nullable() }),
+});
+export const AgentExecutionStopRequestSchema = z.object({
+  type: z.literal("agent.execution.stop.request"),
+  agentId: z.string(),
+  execution: AgentExecutionSchema,
+  requestId: z.string(),
+});
+export const AgentExecutionStopResponseSchema = z.object({
+  type: z.literal("agent.execution.stop.response"),
+  payload: z.object({ requestId: z.string(), result: AgentExecutionStopResultSchema }),
 });
 
 export const AgentRewindModeSchema = z.enum(["conversation", "files", "both"]);
@@ -3390,6 +3540,11 @@ export const SessionInboundMessageSchema = z.discriminatedUnion("type", [
   ImportAgentRequestMessageSchema,
   RefreshAgentRequestMessageSchema,
   CancelAgentRequestMessageSchema,
+  AgentExecutionCaptureRequestSchema,
+  AgentExecutionStopRequestSchema,
+  AgentExecutionGuideRequestSchema,
+  AgentMessageReceiptRequestSchema,
+  ...DeliveryScopeRequestSchema.options,
   ShutdownServerRequestMessageSchema,
   RestartServerRequestMessageSchema,
   DaemonUpdateRequestMessageSchema,
@@ -3764,6 +3919,8 @@ export const ServerInfoStatusPayloadSchema = z
         pluginThemes: z.boolean().optional(),
         pluginSettings: z.boolean().optional(),
         pluginTimelineItems: z.boolean().optional(),
+        agentExecutionControl: z.boolean().optional(),
+        agentMessageReceipts: z.boolean().optional(),
         // COMPAT(pluginSubscriptions): added in v0.15.0, remove gate after 2027-05-02.
         pluginSubscriptions: z.boolean().optional(),
         // COMPAT(skillManagement): added in v0.4.0, remove gate after 2027-08-16.
@@ -3894,6 +4051,8 @@ export const ServerInfoStatusPayloadSchema = z
         agentProfiles: z.boolean().optional(),
         // COMPAT(agentConfigApply): added in v0.3.2, remove gate after 2027-02-11.
         agentConfigApply: z.boolean().optional(),
+        deliveryScopes: z.boolean().optional(),
+        deliveryScopeRecovery: z.boolean().optional(),
       })
       .optional(),
   })
@@ -7168,6 +7327,11 @@ export const SessionOutboundMessageSchema = z.discriminatedUnion("type", [
   AgentAttentionRequiredMessageSchema,
   AgentForkContextResponseMessageSchema,
   CancelAgentResponseMessageSchema,
+  AgentExecutionCaptureResponseSchema,
+  AgentExecutionStopResponseSchema,
+  AgentExecutionGuideResponseSchema,
+  AgentMessageReceiptResponseSchema,
+  ...DeliveryScopeResponseSchema.options,
   ClearAgentAttentionResponseMessageSchema,
   WorkspaceCreateResponseSchema,
   AgentCreateResponseSchema,

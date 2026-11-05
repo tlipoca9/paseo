@@ -372,8 +372,16 @@ export interface AgentTaskItem {
   activeForm?: string;
 }
 
+export type AgentInputOrigin = { kind: "human" } | { kind: "plugin"; pluginId: string };
+
 export type AgentTimelineItem =
-  | { type: "user_message"; text: string; messageId?: string; clientMessageId?: string }
+  | {
+      type: "user_message";
+      text: string;
+      messageId?: string;
+      clientMessageId?: string;
+      origin?: AgentInputOrigin;
+    }
   | { type: "assistant_message"; text: string; messageId?: string }
   | { type: "reasoning"; text: string }
   | ToolCallTimelineItem
