@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { appendFile } from "node:fs/promises";
 import type { Logger } from "pino";
 import type {
   AgentCapabilityFlags,
@@ -49,6 +50,10 @@ const MOCK_LOAD_TEST_INTERVAL_MS = 40;
 
 function getPositiveFeatureInteger(value: unknown): number {
   return typeof value === "number" && Number.isSafeInteger(value) && value > 0 ? value : 0;
+}
+
+function getStringFeatureValue(value: unknown): string | null {
+  return typeof value === "string" ? value : null;
 }
 const ONE_PIXEL_PNG_BASE64 =
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl4Kj8AAAAASUVORK5CYII=";
@@ -803,6 +808,7 @@ export class MockLoadTestAgentSession implements AgentSession {
   private readonly streamingAssistantResponse: string | null;
   private readonly streamingAssistantIntervalMs: number;
   private readonly rewindError: string | null;
+  private readonly promptCapturePath: string | null;
   private remainingPromptRejections: number;
   private remainingSteerFailures: number;
 
@@ -811,6 +817,9 @@ export class MockLoadTestAgentSession implements AgentSession {
     this.logger = options.logger;
     this.modeId = options.config.modeId ?? MOCK_LOAD_TEST_MODE_ID;
     this.modelId = options.config.model ?? MOCK_LOAD_TEST_DEFAULT_MODEL_ID;
+    this.promptCapturePath = getStringFeatureValue(
+      options.config.featureValues?.mockPromptCapturePath,
+    );
     this.assistantResponse =
       typeof options.config.featureValues?.mockAssistantResponse === "string"
         ? options.config.featureValues.mockAssistantResponse
@@ -874,6 +883,13 @@ export class MockLoadTestAgentSession implements AgentSession {
     if (this.remainingPromptRejections > 0) {
       this.remainingPromptRejections -= 1;
       throw new Error("Requested mock prompt rejection");
+    }
+    if (this.promptCapturePath) {
+      await appendFile(
+        this.promptCapturePath,
+        JSON.stringify({ sessionId: this.id, clientMessageId: options?.clientMessageId, prompt }) +
+          "\n",
+      );
     }
 
     const profile = resolveModelProfile(this.modelId);

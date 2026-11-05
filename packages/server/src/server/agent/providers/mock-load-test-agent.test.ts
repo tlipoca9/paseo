@@ -1,11 +1,11 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, test, vi } from "vitest";
 
 import { createTestLogger } from "../../../test-utils/test-logger.js";
 import { AgentManager } from "../agent-manager.js";
-import type { AgentStreamEvent, AgentTimelineItem } from "../agent-sdk-types.js";
+import type { AgentPromptInput, AgentStreamEvent, AgentTimelineItem } from "../agent-sdk-types.js";
 import {
   MOCK_LOAD_TEST_DEFAULT_MODEL_ID,
   MOCK_LOAD_TEST_HANDLED_COMMAND,
@@ -60,6 +60,57 @@ describe("MockLoadTestAgentClient", () => {
       MOCK_LOAD_TEST_HANDLED_COMMAND,
     ]);
     expect(session.tryHandleOutOfBand?.(MOCK_LOAD_TEST_HANDLED_COMMAND)).not.toBeNull();
+  });
+
+  test("captures complete provider input and submission identity only when opted in", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "paseo-provider-input-"));
+    const client = new MockLoadTestAgentClient();
+    const disabled = await client.createSession({ provider: "mock", cwd: directory });
+    const capturePath = join(directory, "prompts.jsonl");
+    const enabled = await client.createSession({
+      provider: "mock",
+      cwd: directory,
+      featureValues: { mockPromptCapturePath: capturePath },
+    });
+    const prompt: AgentPromptInput = [
+      {
+        type: "text",
+        text: '<paseo-system kind="user-message">\n' + "正文🙂".repeat(80000) + "\n</paseo-system>",
+      },
+    ];
+    try {
+      await disabled.startTurn("Default sessions do not capture", { clientMessageId: "disabled" });
+      await disabled.interrupt();
+      expect(readdirSync(directory)).toEqual([]);
+      await enabled.startTurn(prompt, { clientMessageId: "exact-submission-id" });
+      expect(JSON.parse(readFileSync(capturePath, "utf8"))).toEqual({
+        sessionId: enabled.id,
+        clientMessageId: "exact-submission-id",
+        prompt,
+      });
+    } finally {
+      await disabled.close();
+      await enabled.close();
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  test("rejects a turn when its opted-in prompt capture cannot be written", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "paseo-provider-input-"));
+    const session = await new MockLoadTestAgentClient().createSession({
+      provider: "mock",
+      cwd: directory,
+      featureValues: { mockPromptCapturePath: directory },
+    });
+    try {
+      await expect(
+        session.startTurn("Capture this input", { clientMessageId: "capture-error" }),
+      ).rejects.toMatchObject({ path: directory });
+      expect(readdirSync(directory)).toEqual([]);
+    } finally {
+      await session.close();
+      rmSync(directory, { recursive: true, force: true });
+    }
   });
 
   test("rejects the configured number of prompts before starting a retry", async () => {
