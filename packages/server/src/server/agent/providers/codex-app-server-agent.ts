@@ -181,7 +181,7 @@ const INTERRUPT_TIMEOUT_MS = 2_000;
 const INTERRUPTED_TURN_TERMINATE_TIMEOUT_MS = 2_000;
 const INTERRUPTED_TURN_CLEANUP_WAIT_MS =
   INTERRUPT_TIMEOUT_MS + INTERRUPTED_TURN_TERMINATE_TIMEOUT_MS + 500;
-// Turns whose commands are remembered; older turns are forgotten first.
+// Confirmed history may be evicted; unconfirmed turns retain their ownership evidence.
 const INTERRUPTED_TURN_TRACKED_TURNS = 16;
 const CODEX_PROVIDER = "codex" as const;
 // These native provider identities belong to Codex, not to an older custom
@@ -313,6 +313,13 @@ const CODEX_MODES: AgentMode[] = [
 ];
 
 const DEFAULT_CODEX_MODE_ID = "auto";
+
+interface CodexTurnTerminalRecord {
+  processIds: Set<string>;
+  terminatedProcessIds: Set<string>;
+  interruptAccepted: boolean;
+  isStopConfirmed: boolean;
+}
 
 interface CodexAppServerClientLike {
   request(method: string, params?: unknown, timeoutMs?: number): Promise<unknown>;
@@ -3855,10 +3862,7 @@ export class CodexAppServerAgentSession implements AgentSession {
   // The root thread's still-running command process ids, keyed by the native turn that
   // started them. Codex's `thread/backgroundTerminals/list` carries no turn, so
   // `item/started` is the only record of which turn owns a process.
-  private terminalProcessIdsByTurnId = new Map<
-    string,
-    { processIds: Set<string>; terminatedProcessIds: Set<string>; interruptAccepted: boolean }
-  >();
+  private terminalProcessIdsByTurnId = new Map<string, CodexTurnTerminalRecord>();
   private readonly executionTurns = new Map<
     string,
     { nativeTurnId: string; terminal: Promise<void>; finish: () => void }
@@ -5628,13 +5632,10 @@ export class CodexAppServerAgentSession implements AgentSession {
     const execution = this.executionTurns.get(turnId);
     const client = this.client;
     const threadId = this.currentThreadId;
-    if (
-      !execution ||
-      !client ||
-      !threadId ||
-      !this.terminalProcessIdsByTurnId.has(execution.nativeTurnId)
-    )
-      throw new Error("Codex execution ownership is unavailable.");
+    if (!execution) throw new Error("Codex execution ownership is unavailable.");
+    const terminal = this.terminalProcessIdsByTurnId.get(execution.nativeTurnId);
+    const hasOwnership = client && threadId && terminal;
+    if (!hasOwnership) throw new Error("Codex execution ownership is unavailable.");
     const wasActive = this.activeForegroundTurnId === turnId;
     if (wasActive) await this.interrupt();
     await execution.terminal;
@@ -5647,6 +5648,7 @@ export class CodexAppServerAgentSession implements AgentSession {
     const failures = this.terminalStopFailures.get(execution.nativeTurnId);
     if (failures?.size)
       throw new Error([...failures.values()].map((error) => error.message).join("; "));
+    terminal.isStopConfirmed = true;
   }
 
   async canStopRuntime(): Promise<boolean> {
@@ -5726,10 +5728,12 @@ export class CodexAppServerAgentSession implements AgentSession {
       processIds: new Set<string>(),
       terminatedProcessIds: new Set<string>(),
       interruptAccepted: false,
+      isStopConfirmed: false,
     };
     this.terminalProcessIdsByTurnId.set(turnId, record);
-    for (const oldestTurnId of this.terminalProcessIdsByTurnId.keys()) {
+    for (const [oldestTurnId, oldest] of this.terminalProcessIdsByTurnId) {
       if (this.terminalProcessIdsByTurnId.size <= INTERRUPTED_TURN_TRACKED_TURNS) break;
+      if (!oldest.isStopConfirmed) continue;
       this.terminalProcessIdsByTurnId.delete(oldestTurnId);
       this.terminalStopFailures.delete(oldestTurnId);
       for (const [executionId, execution] of this.executionTurns) {
