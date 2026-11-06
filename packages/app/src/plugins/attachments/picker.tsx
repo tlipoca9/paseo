@@ -368,7 +368,7 @@ function FilterTrigger({
       accessibilityLabel={`${label} (${display})`}
       numberOfLines={1}
       style={inputStyle}
-      textStyle={panel && selected ? styles.filterValueSelected : undefined}
+      textStyle={panel ? styles.filterValue : undefined}
       trailing={chevron}
     >
       {panel ? display : flatLabel}
@@ -505,7 +505,7 @@ const styles = StyleSheet.create((theme) => ({
     backgroundColor: theme.colors.interactionHighlight,
   },
   filterInputSelected: { borderColor: theme.colors.borderAccent },
-  filterValueSelected: { color: theme.colors.foreground },
+  filterValue: { color: theme.colors.foreground },
   filterLabel: {
     color: theme.colors.foregroundMuted,
     fontSize: theme.fontSize.sm,
