@@ -1,5 +1,13 @@
 export const pluginAttachments = {
   selectedCount: "{{count}} selected",
+  conversations: "Conversations",
+  filters: "Filters",
+  clearFilters: "Clear filters",
+  backToResults: "Back to results",
+  matchingTotal: "{{count}} matching messages",
+  matchingCount: "{{count}} results",
+  groupLabel: "{{title}}, {{count}} results",
+  groupsLimited: "Showing up to 1,000 conversations. Narrow the filters to find others.",
   referenceDetails: "Reference details",
   referenceAccount: "Account: {{account}}",
   searchDetails: "Search details",
@@ -43,6 +51,14 @@ export const pluginAttachments = {
 };
 export const pluginAttachmentsZh = {
   selectedCount: "已选 {{count}} 条",
+  conversations: "会话",
+  filters: "筛选",
+  clearFilters: "清除筛选",
+  backToResults: "返回消息",
+  matchingTotal: "共 {{count}} 条聊天记录",
+  matchingCount: "{{count}} 条相关记录",
+  groupLabel: "{{title}}，{{count}} 条记录",
+  groupsLimited: "最多展示 1,000 个会话，可缩小筛选范围查找其他会话。",
   referenceDetails: "引用详情",
   referenceAccount: "账号：{{account}}",
   searchDetails: "查询详情",

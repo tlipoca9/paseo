@@ -53,6 +53,58 @@ function renderedTextColor(element: HTMLElement | SVGElement) {
 
 test.describe("plugin resource attachments", () => {
   test.use({ timezoneId: "Asia/Shanghai" });
+  test("browses grouped messages with exact counts, original text and responsive filters", async ({
+    page,
+  }, info) => {
+    const plugin = await installResourceAttachmentPlugin({ grouped: true });
+    const agent = await seedMockAgentWorkspace({
+      repoPrefix: "grouped-messages-",
+      title: "Chat records",
+    });
+    try {
+      await page.setViewportSize({ width: 1280, height: 900 });
+      await openAgentRoute(page, agent);
+      await expectComposerVisible(page);
+      await openAttachmentMenu(page);
+      await page.getByText("Attach Messages", { exact: true }).click();
+      const picker = page.getByTestId("plugin-attachment-picker");
+      await expect(
+        picker.getByRole("button", { name: "Project A, 3 results", exact: true }),
+      ).toBeVisible();
+      await picker.getByPlaceholder("Search messages").fill("值班");
+      await expect(picker.getByTestId("plugin-attachment-result")).toHaveCount(2);
+      await expect(picker.getByTestId("plugin-attachment-highlight").first()).toHaveText("值班");
+      await expect(picker.getByTestId("plugin-attachment-original-text").first()).toContainText(
+        "结尾 1",
+      );
+      await picker.getByRole("button", { name: "Load more", exact: true }).click();
+      await expect(picker.getByTestId("plugin-attachment-result")).toHaveCount(3);
+      await picker.getByRole("button", { name: "Project B, 1 results", exact: true }).click();
+      await expect(picker.getByTestId("plugin-attachment-result")).toHaveCount(1);
+      await expect(picker.getByTestId("plugin-attachment-original-text")).toContainText("结尾 4");
+      await expect(
+        picker.getByText("Local records, not current membership", { exact: true }),
+      ).toBeVisible();
+      await page.screenshot({ path: info.outputPath("chat-records-wide.png") });
+      await page.emulateMedia({ colorScheme: "dark" });
+      await page.screenshot({ path: info.outputPath("chat-records-dark.png") });
+      await picker.getByRole("button", { name: "Done", exact: true }).click();
+      await page.setViewportSize({ width: 390, height: 844 });
+      await openAttachmentMenu(page);
+      await page.getByText("Attach Messages", { exact: true }).click();
+      await page.getByRole("button", { name: "Conversations", exact: true }).click();
+      await page.getByRole("button", { name: "Project A, 3 results", exact: true }).click();
+      await expect(page.getByTestId("plugin-attachment-result")).toHaveCount(2);
+      await page.getByRole("button", { name: "Filters", exact: true }).click();
+      await expect(
+        page.getByText("Local records, not current membership", { exact: true }),
+      ).toBeVisible();
+      await page.screenshot({ path: info.outputPath("chat-records-compact.png") });
+    } finally {
+      await agent.cleanup();
+      await plugin.cleanup();
+    }
+  });
   test("renders message card blocks through draft and saved previews without executing internal actions", async ({
     page,
   }, info) => {

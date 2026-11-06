@@ -10,6 +10,8 @@ interface PickerState {
   context: PluginAttachmentContext | null;
   filters: Record<string, PluginAttachmentFilterOption>;
   cursor?: string;
+  group?: string;
+  previousCursors: Array<string | undefined>;
   activeFilter: string | null;
   candidateQuery: string;
   candidateCursor?: string;
@@ -22,6 +24,7 @@ export function openAttachmentPicker() {
     query: "",
     context: null,
     filters: {},
+    previousCursors: [],
     activeFilter: null,
     previousCandidateCursors: [],
     candidateQuery: "",
@@ -58,6 +61,8 @@ export function openAttachmentPicker() {
           ? {
               filters: {},
               cursor: undefined,
+              group: undefined,
+              previousCursors: [],
               candidateQuery: "",
               candidateCursor: undefined,
               previousCandidateCursors: [],
@@ -66,7 +71,8 @@ export function openAttachmentPicker() {
       });
       return true;
     },
-    setQuery: (query: string) => publish({ ...state, query, cursor: undefined }),
+    setQuery: (query: string) =>
+      publish({ ...state, query, cursor: undefined, group: undefined, previousCursors: [] }),
     selectFilter: (id: string, option: PluginAttachmentFilterOption | null) => {
       const filters = { ...state.filters };
       if (option) filters[id] = option;
@@ -75,13 +81,21 @@ export function openAttachmentPicker() {
         ...state,
         filters,
         cursor: undefined,
+        group: undefined,
+        previousCursors: [],
         activeFilter: null,
         candidateQuery: "",
         candidateCursor: undefined,
         previousCandidateCursors: [],
       });
     },
-    setCursor: (cursor: string) => publish({ ...state, cursor }),
+    setCursor: (cursor: string) =>
+      publish({ ...state, cursor, previousCursors: [...state.previousCursors, state.cursor] }),
+    selectGroup: (group: string) =>
+      publish({ ...state, group, cursor: undefined, previousCursors: [] }),
+    restartSearch: () => publish({ ...state, cursor: undefined, previousCursors: [] }),
+    clearFilters: () =>
+      publish({ ...state, filters: {}, group: undefined, cursor: undefined, previousCursors: [] }),
     openFilter: (activeFilter: string | null) =>
       publish({
         ...state,
@@ -113,6 +127,7 @@ export function openAttachmentPicker() {
             ),
           }
         : {}),
+      ...(state.group ? { group: state.group } : {}),
       ...(state.cursor ? { cursor: state.cursor } : {}),
     }),
   };

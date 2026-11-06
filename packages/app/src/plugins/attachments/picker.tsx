@@ -32,8 +32,9 @@ import {
 } from "./model";
 import { queryPluginAttachments } from "./query";
 import { PluginResourcePreview } from "./preview";
+import { GroupedAttachmentResults } from "./grouped-results";
 import { ResourceBody } from "./resource-body";
-import { openAttachmentPicker } from "./picker-model";
+import { openAttachmentPicker, type AttachmentPickerModel } from "./picker-model";
 import { AttachmentFilterPicker } from "./filter-picker";
 
 const EMPTY_ITEMS: PluginAttachmentItem[] = [];
@@ -127,6 +128,7 @@ function AttachmentPicker({
         state.context?.scope,
         state.filters,
         state.cursor,
+        state.group,
       ],
       queryFn: ({ signal }) =>
         queryPluginAttachments({
@@ -204,9 +206,50 @@ function AttachmentPicker({
   }, [next, model]);
   const { refetch } = search;
   const retry = useCallback(() => {
+    if (state.cursor) {
+      active.plugin.queryClient.removeQueries({
+        queryKey: ["plugin-attachment-cache", input.serverId, active.plugin.id, active.source.id],
+      });
+      model.restartSearch();
+      return;
+    }
     void refetch();
-  }, [refetch]);
+  }, [refetch, state.cursor, model, active, input.serverId]);
   const activeFilter = active.source.filters?.find((filter) => filter.id === state.activeFilter);
+  const filters = useMemo(
+    () => <AttachmentFilters active={active} model={model} state={state} />,
+    [active, model, state],
+  );
+  const results = (
+    <>
+      <AttachmentQueryFeedback
+        pending={pending}
+        error={search.error}
+        result={result}
+        empty={items.length === 0}
+        connected={input.connected}
+        onRetry={retry}
+      />
+      {items.map((item) => (
+        <ResultRow
+          key={pluginResourceIdentity(item)}
+          item={item}
+          selected={input.attachments.some(
+            (attachment) =>
+              attachment.kind === "plugin_resource" &&
+              attachment.pluginId === active.plugin.id &&
+              attachment.sourceId === active.source.id &&
+              pluginResourceIdentity(attachment.item) === pluginResourceIdentity(item),
+          )}
+          onSelect={select}
+          onPreview={model.preview}
+          highlight={query}
+          literal={state.filters.mode?.value === "literal"}
+        />
+      ))}
+      {!pending ? <AttachmentResultFooter result={result} onMore={loadMore} /> : null}
+    </>
+  );
   return (
     <>
       <AdaptiveModalSheet
@@ -216,47 +259,27 @@ function AttachmentPicker({
         contextBridge={null}
         header={header}
         footer={footer}
-        desktopMaxWidth={720}
+        desktopMaxWidth={active.source.groupedResults ? 1360 : 720}
+        scrollable={!active.source.groupedResults}
         desktopHeight="85%"
         snapPoints={FULL_SHEET_SNAP_POINTS}
-        contentStyle={styles.content}
+        contentStyle={active.source.groupedResults ? styles.groupedContent : styles.content}
       >
-        <View style={styles.filters}>
-          {active.source.filters?.map((filter) => (
-            <FilterTrigger
-              key={filter.id}
-              id={filter.id}
-              label={active.plugin.i18n.resolve(filter.label, active.plugin.locale)}
-              display={state.filters[filter.id]?.label ?? t("composer.pluginAttachments.any")}
-              selected={Boolean(state.filters[filter.id])}
-              onOpen={model.openFilter}
-            />
-          ))}
-        </View>
-        <AttachmentQueryFeedback
-          pending={pending}
-          error={search.error}
-          result={result}
-          empty={items.length === 0}
-          connected={input.connected}
-          onRetry={retry}
-        />
-        {items.map((item) => (
-          <ResultRow
-            key={pluginResourceIdentity(item)}
-            item={item}
-            selected={input.attachments.some(
-              (attachment) =>
-                attachment.kind === "plugin_resource" &&
-                attachment.pluginId === active.plugin.id &&
-                attachment.sourceId === active.source.id &&
-                pluginResourceIdentity(attachment.item) === pluginResourceIdentity(item),
-            )}
-            onSelect={select}
-            onPreview={model.preview}
-          />
-        ))}
-        {!pending ? <AttachmentResultFooter result={result} onMore={loadMore} /> : null}
+        {active.source.groupedResults ? (
+          <GroupedAttachmentResults
+            grouping={pending ? undefined : result?.grouping}
+            pending={pending}
+            onGroup={model.selectGroup}
+            filters={filters}
+          >
+            {results}
+          </GroupedAttachmentResults>
+        ) : (
+          <>
+            {filters}
+            {results}
+          </>
+        )}
       </AdaptiveModalSheet>
       <PluginResourcePreview item={state.preview} onClose={closePreview} />
       {activeFilter ? (
@@ -273,36 +296,86 @@ function AttachmentPicker({
     </>
   );
 }
+function AttachmentFilters({
+  active,
+  state,
+  model,
+}: {
+  active: InstalledAttachmentSource;
+  state: ReturnType<AttachmentPickerModel["getState"]>;
+  model: AttachmentPickerModel;
+}) {
+  const { t } = useTranslation();
+  const grouped = active.source.groupedResults;
+  return (
+    <View style={grouped ? styles.filterPanel : styles.filters}>
+      {active.source.filters?.map((filter) => (
+        <View key={filter.id} style={grouped ? styles.filterField : undefined}>
+          <FilterTrigger
+            id={filter.id}
+            label={active.plugin.i18n.resolve(filter.label, active.plugin.locale)}
+            display={state.filters[filter.id]?.label ?? t("composer.pluginAttachments.any")}
+            selected={Boolean(state.filters[filter.id])}
+            onOpen={model.openFilter}
+            panel={grouped}
+          />
+          {filter.description ? (
+            <Text style={styles.secondary}>
+              {active.plugin.i18n.resolve(filter.description, active.plugin.locale)}
+            </Text>
+          ) : null}
+        </View>
+      ))}
+      {Object.keys(state.filters).length ? (
+        <Button variant="ghost" onPress={model.clearFilters}>
+          {t("composer.pluginAttachments.clearFilters")}
+        </Button>
+      ) : null}
+    </View>
+  );
+}
 function FilterTrigger({
   id,
   label,
   display,
   selected,
   onOpen,
+  panel = false,
 }: {
   id: string;
   label: string;
   display: string;
   selected: boolean;
   onOpen: (id: string) => void;
+  panel?: boolean;
 }) {
   const open = useCallback(() => onOpen(id), [id, onOpen]);
   const chevron = useMemo(
     () => <ThemedChevron uniProps={iconColorMapping} size={ICON_SIZE.xs} />,
     [],
   );
-  return (
+  const flatVariant = selected ? "secondary" : "ghost";
+  const flatLabel = selected ? `${label}: ${display}` : label;
+  const button = (
     <Button
       size="sm"
-      variant={selected ? "secondary" : "ghost"}
+      variant={panel ? "outline" : flatVariant}
       onPress={open}
       accessibilityLabel={`${label} (${display})`}
       numberOfLines={1}
-      style={styles.filter}
+      style={panel ? styles.filterInput : styles.filter}
       trailing={chevron}
     >
-      {selected ? `${label}: ${display}` : label}
+      {panel ? display : flatLabel}
     </Button>
+  );
+  return panel ? (
+    <View style={styles.filterField}>
+      <Text style={styles.filterLabel}>{label}</Text>
+      {button}
+    </View>
+  ) : (
+    button
   );
 }
 function ResultRow({
@@ -310,11 +383,15 @@ function ResultRow({
   selected,
   onSelect,
   onPreview,
+  highlight,
+  literal,
 }: {
   item: PluginAttachmentItem;
   selected: boolean;
   onSelect: (item: PluginAttachmentItem) => void;
   onPreview: (item: PluginAttachmentItem) => void;
+  highlight?: string;
+  literal?: boolean;
 }) {
   const { t } = useTranslation();
   const select = useCallback(() => onSelect(item), [item, onSelect]);
@@ -352,7 +429,12 @@ function ResultRow({
       </View>
       {item.previewText !== undefined || item.previewBlocks ? (
         <View style={styles.messageBody}>
-          <ResourceBody item={item} testID="plugin-attachment-original-text" />
+          <ResourceBody
+            item={item}
+            testID="plugin-attachment-original-text"
+            highlight={highlight}
+            literal={literal}
+          />
         </View>
       ) : null}
     </View>
@@ -406,6 +488,15 @@ export function usePluginAttachmentPicker(
 
 const styles = StyleSheet.create((theme) => ({
   content: { gap: theme.spacing[2], paddingVertical: theme.spacing[3] },
+  groupedContent: { flex: 1, minHeight: 0, paddingBottom: 0 },
+  filterPanel: { gap: theme.spacing[4] },
+  filterInput: {
+    width: "100%",
+    justifyContent: "space-between",
+    borderRadius: theme.borderRadius.lg,
+  },
+  filterLabel: { color: theme.colors.foreground, fontSize: theme.fontSize.sm },
+  filterField: { gap: theme.spacing[1.5] },
   filters: {
     flexDirection: "row",
     flexWrap: "wrap",

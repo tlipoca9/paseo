@@ -42,7 +42,9 @@ function resourceRequestCategory(method: string): ResourceSourceRequest["categor
   return "other";
 }
 
-export async function installResourceAttachmentPlugin() {
+export async function installResourceAttachmentPlugin({
+  grouped = false,
+}: { grouped?: boolean } = {}) {
   const client = await connectDaemonClient<DaemonClient>({
     clientIdPrefix: "resource-attachments",
   });
@@ -75,11 +77,12 @@ export async function installResourceAttachmentPlugin() {
     export default function contribute(client) {
       client.addAttachmentSource(defineAttachmentSource({
         id: "messages", title: "Messages", icon: "CircleDot", pickerTitle: "Attach messages", searchPlaceholder: "Search messages",
-        context, search, filterOptions: options, localResources: true,
+        context, search, filterOptions: options, localResources: true, groupedResults: ${JSON.stringify(grouped)},
         filters: [
           { id: "mode", label: "Match", kind: "select", options: [{ value: "keyword", label: "Keywords" }, { value: "literal", label: "Exact phrase" }] },
           { id: "in", label: "Conversation", kind: "select" },
           { id: "sender", label: "Sender", kind: "select" },
+          ...(${JSON.stringify(grouped)} ? [{ id: "member", label: "Recorded member", description: "Local records, not current membership", kind: "select" }] : []),
           { id: "since", label: "Since", kind: "datetime", boundary: "inclusive" },
           { id: "until", label: "Until", kind: "datetime", boundary: "inclusive" },
         ],
@@ -153,6 +156,15 @@ export async function installResourceAttachmentPlugin() {
         if (input.query === "preparing") return {items:[],status:"preparing",index:{state:"preparing"}};
         if (["unavailable", "error"].includes(input.query)) return { items: [], status: input.query, error: { code: input.query, message: "Synthetic service state" } };
         if (input.query === "empty") return { items: [], status: "ready" };
+        if (${JSON.stringify(grouped)}) {
+          const group = input.group ?? "A";
+          const ids = group === "B" ? ["4"] : input.cursor ? ["3"] : ["1", "2"];
+          return { status: "ready", items: ids.map(id => ({ id, identifier: "Alice " + id, title: "Alice · Project " + group,
+            subtitle: "2026-11-06 14:00", resourceType: "message", previewText: "值班\\n  完整原文🙂\\n" + "正文。".repeat(40) + "\\n结尾 " + id,
+            text: "Metadata\\n值班 original " + id, source: {scope: captured, ref: "grouped:" + id, label: "Project " + group} })),
+            grouping: { groups: [{id:"A", title:"Project A", count:3},{id:"B",title:"Project B",count:1}], selectedId:group, selectedTotal:group === "B" ? 1 : 3, total:4, truncated:false },
+            coverage: {truncated:group === "A" && !input.cursor, nextCursor:group === "A" && !input.cursor ? "next-A" : undefined} };
+        }
         return {
           items: Array.from({length:itemCount}, (_, index) => (9223372036854775807n + BigInt(index)).toString()).map((id, index) => ({
             id, identifier: index === 0 ? "MSG-2" : index === 1 ? "MSG-1" : "MSG-" + (index + 1), title: input.query === "slow" ? "Stale result" : describeSearch ? [captured, ...["mode", "in", "sender", "since", "until"].map(key => input.filters?.[key] ?? "any"), input.cursor ?? "first"].join(" | ") + " · " + (index+1) : "Indexed discussion " + (index + 1),

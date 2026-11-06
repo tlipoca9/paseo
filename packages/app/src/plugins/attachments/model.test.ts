@@ -37,6 +37,67 @@ const item = {
 };
 
 describe("plugin resource attachments", () => {
+  it("appends message pages and resets the read view on group, filter and account changes", async () => {
+    const model = openAttachmentPicker();
+    const queryClient = new QueryClient();
+    let scope = "a";
+    const calls: unknown[] = [];
+    const groupedSource = defineAttachmentSource({
+      id: "groups",
+      title: "Groups",
+      icon: "CircleDot",
+      pickerTitle: "Groups",
+      searchPlaceholder: "Search",
+      groupedResults: true,
+      context: defineRpc({ name: "context", input: z.unknown(), output: z.unknown() }),
+      search: defineRpc({ name: "search", input: z.unknown(), output: z.unknown() }),
+    });
+    const read = () =>
+      queryPluginAttachments({
+        serverId: "host",
+        pluginId: "plugin",
+        source: groupedSource,
+        queryClient,
+        model,
+        input: model.searchInput(),
+        invoke: async (method, value) => {
+          if (method === "context") return { scope };
+          const input = value as { group?: string; cursor?: string };
+          calls.push(input);
+          return {
+            items: [{ ...item, id: `${input.group ?? "A"}/${input.cursor ?? "first"}` }],
+            coverage: {
+              truncated: !input.cursor,
+              ...(!input.cursor ? { nextCursor: "next" } : {}),
+            },
+            grouping: {
+              groups: [{ id: "A", title: "Project A", count: 2 }],
+              selectedId: input.group ?? "A",
+              selectedTotal: 2,
+              total: 2,
+              truncated: false,
+            },
+          };
+        },
+      });
+    try {
+      expect((await read()).result.items.map((i) => i.id)).toEqual(["A/first"]);
+      model.setCursor("next");
+      expect((await read()).result.items.map((i) => i.id)).toEqual(["A/first", "A/next"]);
+      expect(calls).toHaveLength(2);
+      model.selectGroup("B");
+      expect((await read()).result.items.map((i) => i.id)).toEqual(["B/first"]);
+      model.setCursor("next");
+      model.selectFilter("sender", { value: "2", label: "Alice" });
+      expect((await read()).result.items.map((i) => i.id)).toEqual(["A/first"]);
+      model.selectGroup("B");
+      model.setCursor("next");
+      scope = "b";
+      expect((await read()).result.items.map((i) => i.id)).toEqual(["A/first"]);
+    } finally {
+      queryClient.clear();
+    }
+  });
   it("preserves verbatim preview text through draft, submission and saved snapshot decoding", async () => {
     const previewText = "  原文🙂 e\u0301\n\t第二行\n" + "完整正文".repeat(500);
     const previewBlocks = [
@@ -321,6 +382,18 @@ describe("plugin resource attachments", () => {
       search: defineRpc({ name: "web", input: z.unknown(), output: z.unknown() }),
     });
     expect(supportsPluginAttachmentSource(web, undefined)).toBe(true);
+    expect(
+      supportsPluginAttachmentSource(
+        { ...web, groupedResults: true },
+        { pluginResourceAttachments: true },
+      ),
+    ).toBe(false);
+    expect(
+      supportsPluginAttachmentSource(
+        { ...web, groupedResults: true },
+        { pluginResourceAttachments: true, pluginGroupedAttachments: true },
+      ),
+    ).toBe(true);
     for (const extension of [
       { localResources: true },
       { context: web.search },

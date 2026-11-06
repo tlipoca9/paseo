@@ -80,6 +80,7 @@ export interface PluginAttachmentFilterOption<Text extends PluginText = string> 
 export type PluginAttachmentFilter<Text extends PluginText = string> = {
   id: string;
   label: Text;
+  description?: Text;
 } & (
   | { kind: "select"; options?: PluginAttachmentFilterOption<Text>[] }
   | { kind: "datetime"; boundary: "inclusive" | "exclusive" }
@@ -96,6 +97,7 @@ export interface PluginAttachmentSourceContribution<Text extends PluginText = st
   filterOptions?: PluginRpcContract;
   filters?: PluginAttachmentFilter<Text>[];
   localResources?: boolean;
+  groupedResults?: boolean;
 }
 
 export type PluginTimelineData = JsonValue;

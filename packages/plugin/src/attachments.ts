@@ -40,6 +40,7 @@ export const PluginAttachmentSearchInputSchema = z.object({
   scope: z.string().optional(),
   filters: z.record(z.string(), z.string()).optional(),
   cursor: z.string().optional(),
+  group: z.string().optional(),
 });
 
 export const PluginAttachmentContextSchema = z.object({
@@ -73,6 +74,21 @@ function validateResultState(
 export const PluginAttachmentSearchPayloadSchema = z
   .object({
     items: z.array(PluginAttachmentItemSchema),
+    grouping: z
+      .object({
+        groups: z.array(
+          z.object({
+            id: z.string().min(1),
+            title: z.string(),
+            count: z.number().int().nonnegative(),
+          }),
+        ),
+        total: z.number().int().nonnegative(),
+        selectedId: z.string(),
+        selectedTotal: z.number().int().nonnegative(),
+        truncated: z.boolean(),
+      })
+      .optional(),
     coverage: z
       .object({
         truncated: z.boolean(),

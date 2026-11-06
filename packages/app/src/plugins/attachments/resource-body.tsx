@@ -12,9 +12,13 @@ type Block = NonNullable<PluginAttachmentItem["previewBlocks"]>[number];
 export function ResourceBody({
   item,
   testID,
+  highlight,
+  literal,
 }: {
   item: Pick<PluginAttachmentItem, "text" | "previewText" | "previewBlocks">;
   testID: string;
+  highlight?: string;
+  literal?: boolean;
 }) {
   const blocks = useMemo(() => {
     const occurrences = new Map<string, number>();
@@ -28,20 +32,66 @@ export function ResourceBody({
   if (!item.previewBlocks?.length) {
     return (
       <Text selectable style={styles.text} testID={testID}>
-        {item.previewText ?? item.text}
+        <HighlightedText text={item.previewText ?? item.text} query={highlight} literal={literal} />
       </Text>
     );
   }
   return (
     <View style={styles.blocks} testID={testID}>
       {blocks.map(({ block, key }) => (
-        <ResourceBlock key={key} block={block} />
+        <ResourceBlock key={key} block={block} highlight={highlight} literal={literal} />
       ))}
     </View>
   );
 }
 
-function ResourceBlock({ block }: { block: Block }) {
+function HighlightedText({
+  text,
+  query,
+  literal,
+}: {
+  text: string;
+  query?: string;
+  literal?: boolean;
+}) {
+  const parts = useMemo(() => {
+    const terms = (literal ? [query?.trim() ?? ""] : (query?.trim().split(/\s+/) ?? [])).filter(
+      Boolean,
+    );
+    if (!terms.length) return [text];
+    const expression = new RegExp(
+      terms
+        .sort((a, b) => b.length - a.length)
+        .map((term) => term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
+        .join("|"),
+      "giu",
+    );
+    const result = [];
+    let offset = 0;
+    for (const match of text.matchAll(expression)) {
+      result.push(text.slice(offset, match.index));
+      result.push(
+        <Text key={match.index} style={styles.highlight} testID="plugin-attachment-highlight">
+          {match[0]}
+        </Text>,
+      );
+      offset = match.index + match[0].length;
+    }
+    result.push(text.slice(offset));
+    return result;
+  }, [text, query, literal]);
+  return parts;
+}
+
+function ResourceBlock({
+  block,
+  highlight,
+  literal,
+}: {
+  block: Block;
+  highlight?: string;
+  literal?: boolean;
+}) {
   const url = block.type === "action" ? block.url : undefined;
   const open = useCallback(() => {
     if (url) void openExternalUrl(url);
@@ -50,7 +100,7 @@ function ResourceBlock({ block }: { block: Block }) {
   if (block.type === "text")
     return (
       <Text selectable style={styles.text}>
-        {block.text}
+        <HighlightedText text={block.text} query={highlight} literal={literal} />
       </Text>
     );
   return (
@@ -67,6 +117,11 @@ function ResourceBlock({ block }: { block: Block }) {
 }
 
 const styles = StyleSheet.create((theme) => ({
+  highlight: {
+    backgroundColor: theme.colors.statusWarningTint,
+    color: theme.colors.foreground,
+    fontWeight: theme.fontWeight.semibold,
+  },
   blocks: { gap: theme.spacing[3] },
   text: {
     color: theme.colors.foreground,

@@ -3984,6 +3984,7 @@ export const ServerInfoStatusPayloadSchema = z
         pluginSettings: z.boolean().optional(),
         pluginTimelineItems: z.boolean().optional(),
         pluginResourceAttachments: z.boolean().optional(),
+        pluginGroupedAttachments: z.boolean().optional(),
         agentExecutionControl: z.boolean().optional(),
         agentMessageReceipts: z.boolean().optional(),
         // COMPAT(pluginSubscriptions): added in v0.15.0, remove gate after 2027-05-02.

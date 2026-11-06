@@ -2579,11 +2579,11 @@ query syntax or field names. Filter labels and static option labels accept `Plug
 | Export / declaration                                                                  | Contract                                                                                                                               |
 | ------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
 | `PluginAttachmentContextSchema` / `PluginAttachmentContext`                           | `{ scope: string, options?: Record<string, { value: string, label: string }[]> }`                                                      |
-| `PluginAttachmentSearchInputSchema` / `PluginAttachmentSearchInput`                   | `{ query: string, scope?: string, filters?: Record<string, string>, cursor?: string }`                                                 |
+| `PluginAttachmentSearchInputSchema` / `PluginAttachmentSearchInput`                   | `{ query: string, scope?: string, filters?: Record<string, string>, cursor?: string, group?: string }`                                 |
 | `PluginAttachmentFilterOptionsInputSchema` / `PluginAttachmentFilterOptionsInput`     | `{ scope: string, filterId: string, query: string, cursor?: string }`                                                                  |
 | `PluginAttachmentFilterOptionsPayloadSchema` / `PluginAttachmentFilterOptionsPayload` | `{ scope: string, items: { value: string, label: string }[], coverage: { truncated: boolean, nextCursor?: string }, status?, error? }` |
-| `PluginAttachmentSearchPayloadSchema` / `PluginAttachmentSearchPayload`               | `{ items: PluginAttachmentItem[], coverage?, index?, status?, error? }`                                                                |
-| `PluginAttachmentItemSchema` / `PluginAttachmentItem`                                 | `{ id, identifier, title, text, resourceType, subtitle?, previewText?, previewBlocks?, url?, source? }`                 |
+| `PluginAttachmentSearchPayloadSchema` / `PluginAttachmentSearchPayload`               | `{ items: PluginAttachmentItem[], grouping?, coverage?, index?, status?, error? }`                                                     |
+| `PluginAttachmentItemSchema` / `PluginAttachmentItem`                                 | `{ id, identifier, title, text, resourceType, subtitle?, previewText?, previewBlocks?, url?, source? }`                                |
 | `source` on an item                                                                   | `{ scope: string, ref: string, label: string }`; scope and ref are nonempty, opaque strings                                            |
 
 Each item needs a valid URL or a complete local source. `localResources: true` declares URL-less
@@ -2662,6 +2662,38 @@ local date and time to whole-second RFC3339 with an explicit zone (`Z`). The sou
 `inclusive` or `exclusive` semantics without host rounding or neighbor expansion. Both boundaries
 in the example are inclusive. Do not map an exclusive field onto an API that only accepts inclusive
 bounds. Keep backend time parsing independent of locale-dependent CLI date formats.
+
+### Grouped result browsing
+
+Set `groupedResults: true` on an attachment source to show conversation groups, original messages,
+and filters in separate panes. This requires `server_info.features.pluginGroupedAttachments` and
+matching app, daemon, and SDK builds. Compact layouts switch between the panes.
+
+The search input adds optional `group: string`. Return `grouping` alongside the current page:
+
+```ts
+{
+  items: [/* complete messages in the selected group */],
+  grouping: {
+    groups: [{ id: "room-1", title: "Project room", count: 120 }],
+    total: 120,
+    selectedId: "room-1",
+    selectedTotal: 120,
+    truncated: false,
+  },
+  coverage: { truncated: true, nextCursor: "opaque-message-page" },
+}
+```
+
+Counts come from the backend's complete matching set, not the loaded page. `grouping.truncated`
+describes the group list; `coverage.truncated` describes messages in the selected group. Keep
+group selection separate from filters that narrow the entire search. The host appends pages in
+backend order. Bind cursors to the account, complete input and read view; reject expired views
+instead of mixing pages from different searches. Query, filter and account changes reset paging.
+
+Filters can provide optional `description: PluginText` below their control, for example to explain
+that a member filter uses retained local membership records. Plain-text matches are highlighted
+without changing the original text. Sources without `groupedResults` keep the flat result list.
 
 ### Result states and coverage
 

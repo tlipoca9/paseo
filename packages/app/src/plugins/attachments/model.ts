@@ -106,8 +106,9 @@ export function pluginResourceAttachmentToAgentAttachment(
 
 export function supportsPluginAttachmentSource(
   source: PluginAttachmentSourceContribution<PluginText>,
-  features: { pluginResourceAttachments?: boolean } | undefined,
+  features: { pluginResourceAttachments?: boolean; pluginGroupedAttachments?: boolean } | undefined,
 ): boolean {
+  if (source.groupedResults && !features?.pluginGroupedAttachments) return false;
   const extended = Boolean(
     source.localResources || source.context || source.filterOptions || source.filters?.length,
   );

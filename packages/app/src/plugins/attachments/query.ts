@@ -1,6 +1,7 @@
 import type { QueryClient } from "@tanstack/react-query";
 import type {
   PluginAttachmentSearchInput,
+  PluginAttachmentSearchPayload,
   PluginAttachmentSourceContribution,
   PluginAttachmentFilterOptionsInput,
   PluginText,
@@ -45,6 +46,11 @@ function checkCurrent(request: AttachmentQueryContext, scope: string | null) {
   }
 }
 
+function checkInput(request: AttachmentQueryContext, input: PluginAttachmentSearchInput) {
+  if (request.model && JSON.stringify(request.model.searchInput()) !== JSON.stringify(input))
+    throw new Error("Attachment query was superseded");
+}
+
 export async function queryPluginAttachments(
   request: AttachmentQueryContext & { input: PluginAttachmentSearchInput },
 ) {
@@ -52,20 +58,45 @@ export async function queryPluginAttachments(
   const input = request.model?.searchInput() ?? request.input;
   if (input.query !== request.input.query) throw new Error("Attachment query was superseded");
   const scopedInput = context ? { ...input, scope: context.scope } : input;
-  const queryKey = [...prefix, scope, "results", scopedInput];
-  const result = await request.queryClient.fetchQuery({
-    queryKey,
-    queryFn: () => searchPluginAttachments(request.source, request.invoke, scopedInput),
-    staleTime: 30_000,
-    retry: false,
-  });
-  checkCurrent(request, scope);
-  if (result.items.some((item) => item.source && context && item.source.scope !== context.scope)) {
-    request.queryClient.removeQueries({ queryKey });
-    throw new Error("Attachment result scope changed");
+  const pages: PluginAttachmentSearchPayload[] = [];
+  const previous = request.source.groupedResults
+    ? (request.model?.getState().previousCursors ?? [])
+    : [];
+  for (const [index, cursor] of [...previous, input.cursor].entries()) {
+    const pageInput = { ...scopedInput, cursor };
+    const queryKey = [...prefix, scope, "results", pageInput];
+    const cached = request.queryClient.getQueryData<PluginAttachmentSearchPayload>(queryKey);
+    if (index < previous.length && !cached)
+      throw new Error("The read view expired; restart the search");
+    const result =
+      index < previous.length
+        ? cached!
+        : await request.queryClient.fetchQuery({
+            queryKey,
+            queryFn: () => searchPluginAttachments(request.source, request.invoke, pageInput),
+            staleTime: 30_000,
+            retry: false,
+          });
+    checkCurrent(request, scope);
+    checkInput(request, input);
+    if (
+      result.items.some((item) => item.source && context && item.source.scope !== context.scope)
+    ) {
+      request.queryClient.removeQueries({ queryKey });
+      throw new Error("Attachment result scope changed");
+    }
+    if (result.status && result.status !== "ready") {
+      request.queryClient.removeQueries({ queryKey });
+      return { context, result };
+    }
+    if (index > 0 && pages[index - 1]?.coverage?.nextCursor !== cursor)
+      throw new Error("Attachment page belongs to a different read view");
+    pages.push(result);
   }
-  if (result.status && result.status !== "ready") request.queryClient.removeQueries({ queryKey });
-  return { context, result };
+  return {
+    context,
+    result: { ...pages[pages.length - 1]!, items: pages.flatMap((page) => page.items) },
+  };
 }
 
 export async function queryPluginAttachmentFilterOptions(
