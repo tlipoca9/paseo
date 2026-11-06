@@ -356,14 +356,19 @@ function FilterTrigger({
   );
   const flatVariant = selected ? "secondary" : "ghost";
   const flatLabel = selected ? `${label}: ${display}` : label;
+  const inputStyle = useMemo(
+    () => (panel ? [styles.filterInput, selected && styles.filterInputSelected] : styles.filter),
+    [panel, selected],
+  );
   const button = (
     <Button
-      size="sm"
-      variant={panel ? "outline" : flatVariant}
+      size={panel ? undefined : "sm"}
+      variant={panel ? "ghost" : flatVariant}
       onPress={open}
       accessibilityLabel={`${label} (${display})`}
       numberOfLines={1}
-      style={panel ? styles.filterInput : styles.filter}
+      style={inputStyle}
+      textStyle={panel && selected ? styles.filterValueSelected : undefined}
       trailing={chevron}
     >
       {panel ? display : flatLabel}
@@ -397,8 +402,9 @@ function ResultRow({
   const select = useCallback(() => onSelect(item), [item, onSelect]);
   const preview = useCallback(() => onPreview(item), [item, onPreview]);
   const selectionState = useMemo(() => ({ selected }), [selected]);
+  const rowStyle = useMemo(() => [styles.row, selected && styles.rowSelected], [selected]);
   return (
-    <View style={styles.row} testID="plugin-attachment-result">
+    <View style={rowStyle} testID="plugin-attachment-result">
       <View style={styles.rowHeader}>
         <View style={styles.description}>
           <Text style={styles.title}>{item.title}</Text>
@@ -407,6 +413,7 @@ function ResultRow({
         <View style={styles.actions}>
           <Button
             variant="ghost"
+            size="sm"
             leftIcon={Eye}
             accessibilityLabel={t("composer.pluginAttachments.previewItem", {
               item: item.identifier,
@@ -415,6 +422,7 @@ function ResultRow({
           />
           <Button
             variant={selected ? "secondary" : "ghost"}
+            size="sm"
             leftIcon={selected ? Check : Circle}
             accessibilityState={selectionState}
             accessibilityLabel={t(
@@ -489,13 +497,21 @@ export function usePluginAttachmentPicker(
 const styles = StyleSheet.create((theme) => ({
   content: { gap: theme.spacing[2], paddingVertical: theme.spacing[3] },
   groupedContent: { flex: 1, minHeight: 0, paddingBottom: 0 },
-  filterPanel: { gap: theme.spacing[4] },
+  filterPanel: { gap: theme.spacing[6] },
   filterInput: {
     width: "100%",
     justifyContent: "space-between",
     borderRadius: theme.borderRadius.lg,
+    backgroundColor: theme.colors.interactionHighlight,
   },
-  filterLabel: { color: theme.colors.foreground, fontSize: theme.fontSize.sm },
+  filterInputSelected: { borderColor: theme.colors.borderAccent },
+  filterValueSelected: { color: theme.colors.foreground },
+  filterLabel: {
+    color: theme.colors.foregroundMuted,
+    fontSize: theme.fontSize.sm,
+    fontFamily: theme.fontFamily.ui,
+    fontWeight: theme.fontWeight.medium,
+  },
   filterField: { gap: theme.spacing[1.5] },
   filters: {
     flexDirection: "row",
@@ -506,26 +522,31 @@ const styles = StyleSheet.create((theme) => ({
   filter: { maxWidth: 240 },
   row: {
     gap: theme.spacing[3],
-    paddingVertical: theme.spacing[3],
-    borderBottomWidth: 1,
-    borderBottomColor: theme.colors.surface2,
+    padding: theme.spacing[4],
+    borderRadius: theme.borderRadius.xl,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    backgroundColor: theme.colors.surface1,
+    marginBottom: theme.spacing[1],
   },
+  rowSelected: { borderColor: theme.colors.accentBright },
   rowHeader: { flexDirection: "row", alignItems: "flex-start", gap: theme.spacing[3] },
   description: { gap: theme.spacing[1], flex: 1, minWidth: 0 },
   title: {
     fontSize: theme.fontSize.base,
-    fontWeight: theme.fontWeight.medium,
+    fontWeight: theme.fontWeight.semibold,
+    fontFamily: theme.fontFamily.ui,
     color: theme.colors.foreground,
   },
-  secondary: { fontSize: theme.fontSize.sm, color: theme.colors.foregroundMuted },
+  secondary: {
+    fontSize: theme.fontSize.sm,
+    lineHeight: theme.fontSize.sm * 1.5,
+    fontFamily: theme.fontFamily.ui,
+    color: theme.colors.foregroundMuted,
+  },
   actions: { flexDirection: "row", gap: theme.spacing[1] },
   messageBody: {
-    color: theme.colors.foreground,
-    fontSize: theme.fontSize.content,
-    lineHeight: theme.fontSize.content * 1.6,
-    padding: theme.spacing[3],
-    borderRadius: theme.borderRadius.lg,
-    backgroundColor: theme.colors.surface1,
+    minWidth: 0,
   },
 }));
 const ThemedChevron = withUnistyles(ChevronDown);

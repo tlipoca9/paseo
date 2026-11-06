@@ -63,6 +63,7 @@ test.describe("plugin resource attachments", () => {
     });
     try {
       await page.setViewportSize({ width: 1280, height: 900 });
+      await page.emulateMedia({ colorScheme: "light" });
       await openAgentRoute(page, agent);
       await expectComposerVisible(page);
       await openAttachmentMenu(page);
@@ -86,15 +87,19 @@ test.describe("plugin resource attachments", () => {
         picker.getByText("Local records, not current membership", { exact: true }),
       ).toBeVisible();
       await page.screenshot({ path: info.outputPath("chat-records-wide.png") });
+      const originalText = picker.getByTestId("plugin-attachment-original-text");
+      const lightColor = await originalText.evaluate(renderedTextColor);
       await page.emulateMedia({ colorScheme: "dark" });
+      await expect.poll(() => originalText.evaluate(renderedTextColor)).not.toBe(lightColor);
       await page.screenshot({ path: info.outputPath("chat-records-dark.png") });
       await picker.getByRole("button", { name: "Done", exact: true }).click();
-      await page.setViewportSize({ width: 390, height: 844 });
+      await page.setViewportSize({ width: 375, height: 844 });
       await openAttachmentMenu(page);
       await page.getByText("Attach Messages", { exact: true }).click();
       await page.getByRole("button", { name: "Conversations", exact: true }).click();
       await page.getByRole("button", { name: "Project A, 3 results", exact: true }).click();
       await expect(page.getByTestId("plugin-attachment-result")).toHaveCount(2);
+      await page.screenshot({ path: info.outputPath("chat-records-compact-messages.png") });
       await page.getByRole("button", { name: "Filters", exact: true }).click();
       await expect(
         page.getByText("Local records, not current membership", { exact: true }),

@@ -125,6 +125,7 @@ const styles = StyleSheet.create((theme) => ({
   blocks: { gap: theme.spacing[3] },
   text: {
     color: theme.colors.foreground,
+    fontFamily: theme.fontFamily.ui,
     fontSize: theme.fontSize.content,
     lineHeight: theme.fontSize.content * 1.6,
   },

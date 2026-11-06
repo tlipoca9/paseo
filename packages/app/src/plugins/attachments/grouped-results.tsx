@@ -144,11 +144,12 @@ function ConversationRow({
   const { t } = useTranslation();
   const select = useCallback(() => onSelect(group.id), [onSelect, group.id]);
   const selectionState = useMemo(() => ({ selected }), [selected]);
+  const rowStyle = useMemo(() => [styles.group, selected && styles.selectedGroup], [selected]);
   return (
     <Button
-      variant={selected ? "secondary" : "ghost"}
+      variant="ghost"
       onPress={select}
-      style={styles.group}
+      style={rowStyle}
       accessibilityLabel={t("composer.pluginAttachments.groupLabel", {
         title: group.title,
         count: group.count,
@@ -171,25 +172,42 @@ const styles = StyleSheet.create((theme) => ({
   root: { flex: 1, minHeight: 0 },
   columns: { flex: 1, minHeight: 0, flexDirection: "row" },
   mobileToolbar: { flexDirection: "row", gap: theme.spacing[2], paddingBottom: theme.spacing[2] },
-  left: { width: 220, borderRightWidth: 1, borderRightColor: theme.colors.border },
+  left: {
+    width: 220,
+    backgroundColor: theme.colors.surface1,
+    borderRightWidth: 1,
+    borderRightColor: theme.colors.border,
+  },
   main: { flex: 1, minWidth: 0, minHeight: 0 },
-  right: { width: 216, flexShrink: 0, borderLeftWidth: 1, borderLeftColor: theme.colors.border },
+  right: {
+    width: 216,
+    flexShrink: 0,
+    backgroundColor: theme.colors.surface1,
+    borderLeftWidth: 1,
+    borderLeftColor: theme.colors.border,
+  },
   scroll: { flex: 1, minHeight: 0 },
   groupList: {
-    paddingRight: theme.spacing[3],
-    gap: theme.spacing[2],
-    paddingTop: theme.spacing[3],
+    padding: theme.spacing[3],
+    gap: theme.spacing[1],
   },
   group: {
     justifyContent: "flex-start",
     height: "auto",
-    borderRadius: theme.borderRadius.lg,
+    borderRadius: theme.borderRadius.xl,
+    borderLeftWidth: 2,
+    borderLeftColor: "transparent",
     paddingVertical: theme.spacing[3],
+  },
+  selectedGroup: {
+    backgroundColor: theme.colors.interactionHighlight,
+    borderLeftColor: theme.colors.accentBright,
   },
   groupText: { flex: 1, minWidth: 0, gap: theme.spacing[1] },
   groupTitle: {
     fontSize: theme.fontSize.base,
     fontWeight: theme.fontWeight.medium,
+    fontFamily: theme.fontFamily.ui,
     color: theme.colors.foreground,
   },
   heading: {
@@ -197,18 +215,27 @@ const styles = StyleSheet.create((theme) => ({
     fontWeight: theme.fontWeight.semibold,
     color: theme.colors.foreground,
   },
-  caption: { fontSize: theme.fontSize.sm, color: theme.colors.foregroundMuted },
+  caption: {
+    fontSize: theme.fontSize.sm,
+    lineHeight: theme.fontSize.sm * 1.5,
+    fontFamily: theme.fontFamily.ui,
+    color: theme.colors.foregroundMuted,
+  },
   resultHeading: {
     paddingHorizontal: theme.spacing[4],
-    paddingVertical: theme.spacing[3],
+    paddingVertical: theme.spacing[4],
     gap: theme.spacing[1],
     borderBottomWidth: 1,
     borderBottomColor: theme.colors.border,
   },
-  messages: { paddingHorizontal: theme.spacing[4], paddingBottom: theme.spacing[4] },
+  messages: {
+    paddingHorizontal: theme.spacing[4],
+    paddingVertical: theme.spacing[3],
+    gap: theme.spacing[3],
+  },
   filterList: {
-    paddingLeft: theme.spacing[4],
-    paddingTop: theme.spacing[3],
+    paddingHorizontal: theme.spacing[4],
+    paddingTop: theme.spacing[4],
     paddingBottom: theme.spacing[6],
     gap: theme.spacing[4],
   },
