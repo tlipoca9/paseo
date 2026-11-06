@@ -155,6 +155,7 @@ function SnapshotBody({ client, query, supported }: PreviewState & Pick<Snapshot
       title: attachment?.localResource?.title ?? attachment?.externalResource?.title ?? "",
       text: attachment?.text ?? "",
       previewText: attachment?.localResource?.previewText,
+      previewBlocks: attachment?.localResource?.previewBlocks,
       source: attachment?.localResource?.source,
     }),
     [attachment],

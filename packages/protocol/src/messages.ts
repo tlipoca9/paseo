@@ -1,4 +1,5 @@
 import { AgentMessageSchema } from "./agent-message.js";
+import { ResourcePreviewBlocksSchema } from "./resource-preview.js";
 import {
   HostsListRequestSchema,
   HostsAddRequestSchema,
@@ -1198,6 +1199,7 @@ export const LocalResourceAttachmentMetadataSchema = ExternalResourceAttachmentM
   sourceId: z.string(),
   source: ResourceAttachmentSourceSchema,
   previewText: z.string().optional(),
+  previewBlocks: ResourcePreviewBlocksSchema.optional(),
 });
 
 export const TextAttachmentSchema = z

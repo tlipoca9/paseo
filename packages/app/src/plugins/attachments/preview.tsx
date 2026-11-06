@@ -6,10 +6,11 @@ import { ChevronDown, ChevronUp } from "lucide-react-native";
 import { StyleSheet } from "react-native-unistyles";
 import { AdaptiveModalSheet, FULL_SHEET_SNAP_POINTS } from "@/components/adaptive-modal-sheet";
 import { Button } from "@/components/ui/button";
+import { ResourceBody } from "./resource-body";
 
 export type ResourcePreview = Pick<
   PluginAttachmentItem,
-  "title" | "text" | "source" | "previewText" | "subtitle"
+  "title" | "text" | "source" | "previewText" | "previewBlocks" | "subtitle"
 >;
 
 export function ResourcePreviewContent({ item }: { item: ResourcePreview }) {
@@ -19,9 +20,7 @@ export function ResourcePreviewContent({ item }: { item: ResourcePreview }) {
   const detailsState = useMemo(() => ({ expanded: details }), [details]);
   return (
     <>
-      <Text selectable style={styles.body} testID="resource-preview-text">
-        {item.previewText ?? item.text}
-      </Text>
+      <ResourceBody item={item} testID="resource-preview-text" />
       {item.source ? (
         <View style={styles.details}>
           <Button
@@ -88,11 +87,6 @@ export function PluginResourcePreview({
 }
 
 const styles = StyleSheet.create((theme) => ({
-  body: {
-    color: theme.colors.foreground,
-    fontSize: theme.fontSize.content,
-    lineHeight: theme.fontSize.content * 1.6,
-  },
   details: {
     borderTopWidth: 1,
     borderTopColor: theme.colors.surface2,

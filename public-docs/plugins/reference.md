@@ -2583,7 +2583,7 @@ query syntax or field names. Filter labels and static option labels accept `Plug
 | `PluginAttachmentFilterOptionsInputSchema` / `PluginAttachmentFilterOptionsInput`     | `{ scope: string, filterId: string, query: string, cursor?: string }`                                                                  |
 | `PluginAttachmentFilterOptionsPayloadSchema` / `PluginAttachmentFilterOptionsPayload` | `{ scope: string, items: { value: string, label: string }[], coverage: { truncated: boolean, nextCursor?: string }, status?, error? }` |
 | `PluginAttachmentSearchPayloadSchema` / `PluginAttachmentSearchPayload`               | `{ items: PluginAttachmentItem[], coverage?, index?, status?, error? }`                                                                |
-| `PluginAttachmentItemSchema` / `PluginAttachmentItem`                                 | `{ id, identifier, title, text, resourceType, subtitle?, previewText?, url?, source? }`; all scalar fields are strings                 |
+| `PluginAttachmentItemSchema` / `PluginAttachmentItem`                                 | `{ id, identifier, title, text, resourceType, subtitle?, previewText?, previewBlocks?, url?, source? }`                 |
 | `source` on an item                                                                   | `{ scope: string, ref: string, label: string }`; scope and ref are nonempty, opaque strings                                            |
 
 Each item needs a valid URL or a complete local source. `localResources: true` declares URL-less
@@ -2598,6 +2598,14 @@ including whitespace and the final line. The host displays it without summarizin
 preserves it in drafts and sent snapshots, and keeps the full payload and source under reference
 details. Omitting it preserves the existing preview behavior. Use a human-readable `identifier`;
 it labels attachment actions and selected references.
+
+For structured messages, `previewBlocks` can carry the original content in order:
+`{type: "markdown", text}`, `{type: "text", text}`, or `{type: "action", label, url?}`.
+The host renders Markdown and opens HTTP(S) actions only after a click. Actions without a URL
+remain visible and disabled. Image syntax becomes a link; previews do not fetch images or resolve
+workspace files and commands. Keep the complete source in `previewText` and the agent payload in
+`text`; neither is replaced by the rendered blocks. Blocks persist in local drafts and sent
+snapshots. Older hosts ignore this optional field and display `previewText`.
 
 ### Account context and candidate options
 

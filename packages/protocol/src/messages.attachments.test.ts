@@ -48,6 +48,11 @@ describe("shared messages attachments", () => {
         identifier: "Message",
         title: "Discussion",
         previewText: "  原文🙂\n\t末行",
+        previewBlocks: [
+          { type: "markdown", text: "**原文**\n末行" },
+          { type: "action", label: "详情", url: "https://example.com/details" },
+          { type: "action", label: "内部操作" },
+        ],
         source: { scope: "account-1", ref: "opaque:9223372036854775807", label: "Team · Alice" },
       },
     };

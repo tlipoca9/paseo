@@ -32,6 +32,7 @@ import {
 } from "./model";
 import { queryPluginAttachments } from "./query";
 import { PluginResourcePreview } from "./preview";
+import { ResourceBody } from "./resource-body";
 import { openAttachmentPicker } from "./picker-model";
 import { AttachmentFilterPicker } from "./filter-picker";
 
@@ -349,10 +350,10 @@ function ResultRow({
           />
         </View>
       </View>
-      {item.previewText !== undefined ? (
-        <Text selectable style={styles.messageBody} testID="plugin-attachment-original-text">
-          {item.previewText}
-        </Text>
+      {item.previewText !== undefined || item.previewBlocks ? (
+        <View style={styles.messageBody}>
+          <ResourceBody item={item} testID="plugin-attachment-original-text" />
+        </View>
       ) : null}
     </View>
   );

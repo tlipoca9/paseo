@@ -39,10 +39,15 @@ const item = {
 describe("plugin resource attachments", () => {
   it("preserves verbatim preview text through draft, submission and saved snapshot decoding", async () => {
     const previewText = "  原文🙂 e\u0301\n\t第二行\n" + "完整正文".repeat(500);
+    const previewBlocks = [
+      { type: "markdown" as const, text: "**原消息**\n逐字正文🙂" },
+      { type: "action" as const, label: "详情", url: "https://example.com/details" },
+    ];
     const draft = createPluginResourceAttachment(source, {
       ...item,
       url: undefined,
       previewText,
+      previewBlocks,
       text: `Technical metadata\n\n${previewText}`,
       source: { scope: "account", ref: "opaque-ref", label: "Alice · Project" },
     });
@@ -50,6 +55,7 @@ describe("plugin resource attachments", () => {
       JSON.parse(JSON.stringify(draft)),
     );
     expect(restored.item.previewText).toBe(previewText);
+    expect(restored.item.previewBlocks).toEqual(previewBlocks);
     const attachment = pluginResourceAttachmentToAgentAttachment(restored);
     const text = JSON.stringify(attachment);
     const bytes = Buffer.from(text);
@@ -68,6 +74,7 @@ describe("plugin resource attachments", () => {
       }),
     });
     expect(saved.localResource?.previewText).toBe(previewText);
+    expect(saved.localResource?.previewBlocks).toEqual(previewBlocks);
     expect(saved.text).toContain(`Technical metadata\n\n${previewText}`);
     expect(saved.text).toContain("Reference: opaque-ref");
   });

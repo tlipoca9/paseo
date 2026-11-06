@@ -83,6 +83,7 @@ export function pluginResourceAttachmentToAgentAttachment(
         ...(attachment.item.previewText !== undefined
           ? { previewText: attachment.item.previewText }
           : {}),
+        ...(attachment.item.previewBlocks ? { previewBlocks: attachment.item.previewBlocks } : {}),
       },
     };
   }

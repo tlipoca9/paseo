@@ -19,6 +19,7 @@ import { createMarkdownStyles } from "./styles";
 import { PENDING_MARKDOWN_IMAGE } from "./source";
 import { splitStreamingMarkdown } from "./streaming";
 import { useMarkdownSource, type MarkdownImageContext } from "./images";
+import { externalMarkdownSource } from "./external-source";
 
 import { MermaidFence, MermaidStreamingContext, splitMermaidFences } from "./fence/mermaid";
 
@@ -37,6 +38,30 @@ const markdownStyle =
 const regularStyle = markdownStyle(false);
 const compactStyle = markdownStyle(true);
 const compactMutedStyle = markdownStyle(true, true);
+
+const openExternalLink = ({ url }: LinkPressEvent) => void openExternalUrl(url);
+
+/** Message previews have no workspace file access, command actions, or image loading. */
+export const ExternalMarkdownRenderer = memo(function ExternalMarkdownRenderer({
+  text,
+}: {
+  text: string;
+}) {
+  const markdown = useMemo(() => externalMarkdownSource(text), [text]);
+  return (
+    <ThemedMarkdown
+      markdown={markdown}
+      uniProps={regularStyle}
+      flavor="github"
+      selectable
+      md4cFlags={MD4C_FLAGS}
+      enableTaskListItemToggle={false}
+      enableLinkPreview={false}
+      enableBlockContextMenu={false}
+      onLinkPress={openExternalLink}
+    />
+  );
+});
 
 function pickMarkdownStyle(compact: boolean, muted: boolean) {
   if (!compact) return regularStyle;

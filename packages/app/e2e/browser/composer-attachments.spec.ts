@@ -53,6 +53,78 @@ function renderedTextColor(element: HTMLElement | SVGElement) {
 
 test.describe("plugin resource attachments", () => {
   test.use({ timezoneId: "Asia/Shanghai" });
+  test("renders message card blocks through draft and saved previews without executing internal actions", async ({
+    page,
+  }, info) => {
+    const plugin = await installResourceAttachmentPlugin();
+    const agent = await seedMockAgentWorkspace({
+      repoPrefix: "resource-card-",
+      title: "Message card",
+    });
+    const markdown =
+      '[Prometheus告警触发通知]\n告警级别：<font color="#0052d9">提示</font>\n摘要：API 出现内部错误\n**错误速率**：0.02/s\n客户：示例团队\n接口：StartSandboxInstance\n[监控看板](https://example.com/dashboard)\n![图表](https://example.com/never-fetch.png)';
+    const blocks = [
+      { type: "markdown", text: markdown },
+      { type: "action", label: "告警详情", url: "https://example.com/detail" },
+      { type: "action", label: "智能分析" },
+    ];
+    const original = JSON.stringify({ msgtype: "message", blocks });
+    const requests: string[] = [];
+    page.on("request", (request) => requests.push(request.url()));
+    try {
+      await plugin.control({ previewText: original, previewBlocks: blocks });
+      await page.setViewportSize({ width: 1280, height: 900 });
+      await openAgentRoute(page, agent);
+      await expectComposerVisible(page);
+      await openAttachmentMenu(page);
+      await page.getByText("Attach Messages", { exact: true }).click();
+      const picker = page.getByTestId("plugin-attachment-picker");
+      const card = picker.getByTestId("plugin-attachment-original-text").first();
+      await expect(card).toContainText("告警级别：提示");
+      await expect(card).toContainText("摘要：API 出现内部错误");
+      await expect(card.locator("strong")).toHaveText("错误速率");
+      await expect(card).not.toContainText('"msgtype"');
+      await expect(card.getByRole("button", { name: "智能分析", exact: true })).toBeDisabled();
+      await expect(card.getByRole("button", { name: "告警详情", exact: true })).toBeEnabled();
+      await page
+        .context()
+        .route("https://example.com/**", (route) => route.fulfill({ body: "Details" }));
+      const popupPromise = page.waitForEvent("popup");
+      await card.getByRole("button", { name: "告警详情", exact: true }).click();
+      const popup = await popupPromise;
+      await expect(popup).toHaveURL("https://example.com/detail");
+      await popup.close();
+      expect(requests.some((url) => url.includes("never-fetch.png"))).toBe(false);
+      await page.screenshot({ path: info.outputPath("message-card-wide.png") });
+      await picker.getByRole("button", { name: "Add MSG-2", exact: true }).click();
+      await picker.getByRole("button", { name: "Done", exact: true }).click();
+      await page.reload({ waitUntil: "domcontentloaded" });
+      await page.getByTestId("composer-plugin-resource-attachment-pill").click();
+      const preview = page.getByTestId("plugin-resource-preview");
+      await expect(preview).toContainText("告警级别：提示");
+      await preview.getByRole("button", { name: "Reference details", exact: true }).click();
+      await expect(preview).toContainText(original);
+      await preview.getByRole("button", { name: "Close", exact: true }).click();
+      await submitMessage(page, "Read this card");
+      await expectAgentIdle(page, 15_000);
+      await page.reload({ waitUntil: "domcontentloaded" });
+      await page.getByTestId("message-local-resource").click();
+      await expect(preview).toContainText("告警级别：提示");
+      await expect(preview.getByRole("button", { name: "智能分析", exact: true })).toBeDisabled();
+      await preview.getByRole("button", { name: "Close", exact: true }).click();
+      await page.setViewportSize({ width: 375, height: 844 });
+      await page.emulateMedia({ colorScheme: "dark" });
+      await page.getByTestId("message-local-resource").click();
+      await expect(page.getByTestId("resource-preview-text")).toContainText("告警级别：提示");
+      await page.screenshot({ path: info.outputPath("message-card-compact.png") });
+      const bounds = await page.getByTestId("resource-preview-text").boundingBox();
+      expect(bounds!.x).toBeGreaterThanOrEqual(0);
+      expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(375);
+    } finally {
+      await agent.cleanup();
+      await plugin.cleanup();
+    }
+  });
   test("shows verbatim originals with optional details through draft and saved previews", async ({
     page,
   }, info) => {

@@ -1,5 +1,6 @@
 import type { PluginText } from "./text.js";
 import { z } from "zod";
+import { ResourcePreviewBlocksSchema } from "@getpaseo/protocol/resource-preview";
 import type { PluginAttachmentSourceContribution } from "./contracts.js";
 
 export function defineAttachmentSource<
@@ -20,6 +21,7 @@ export const PluginAttachmentItemSchema = z
     url: z.url().optional(),
     text: z.string(),
     previewText: z.string().optional(),
+    previewBlocks: ResourcePreviewBlocksSchema.optional(),
     resourceType: z.string(),
     source: z
       .object({
