@@ -1197,6 +1197,7 @@ export const LocalResourceAttachmentMetadataSchema = ExternalResourceAttachmentM
 }).extend({
   sourceId: z.string(),
   source: ResourceAttachmentSourceSchema,
+  previewText: z.string().optional(),
 });
 
 export const TextAttachmentSchema = z

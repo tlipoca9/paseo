@@ -80,6 +80,9 @@ export function pluginResourceAttachmentToAgentAttachment(
         identifier: attachment.item.identifier,
         title: attachment.item.title,
         source,
+        ...(attachment.item.previewText !== undefined
+          ? { previewText: attachment.item.previewText }
+          : {}),
       },
     };
   }

@@ -6,12 +6,13 @@ import { useTranslation } from "react-i18next";
 import { StyleSheet } from "react-native-unistyles";
 import type { ResourceSnapshotReference } from "@getpaseo/protocol/agent-types";
 import type { DaemonClient } from "@getpaseo/client/internal/daemon-client";
-import { AdaptiveModalSheet } from "@/components/adaptive-modal-sheet";
+import { AdaptiveModalSheet, FULL_SHEET_SNAP_POINTS } from "@/components/adaptive-modal-sheet";
 import { AttachmentFrame, AttachmentLabel } from "@/components/attachment-pill";
 import { Button } from "@/components/ui/button";
 import { useFetchQuery } from "@/data/query";
 import { openExternalUrl } from "@/utils/open-external-url";
 import { readResourceAttachment } from "./snapshot";
+import { ResourcePreviewContent } from "./preview";
 
 type Description = ResourceSnapshotReference["items"][number];
 interface SnapshotProps {
@@ -57,9 +58,6 @@ function ReferenceRow({
       >
         <AttachmentLabel title={item.title} subtitle={item.sourceLabel} />
       </AttachmentFrame>
-      <Text numberOfLines={2} style={styles.source}>
-        {item.excerpt}
-      </Text>
     </View>
   );
 }
@@ -152,6 +150,15 @@ function SnapshotBody({ client, query, supported }: PreviewState & Pick<Snapshot
   }, [refetch]);
   const attachment = query.data;
   const web = attachment?.externalResource;
+  const previewItem = useMemo(
+    () => ({
+      title: attachment?.localResource?.title ?? attachment?.externalResource?.title ?? "",
+      text: attachment?.text ?? "",
+      previewText: attachment?.localResource?.previewText,
+      source: attachment?.localResource?.source,
+    }),
+    [attachment],
+  );
   const openWebsite = useCallback(() => {
     if (web) void openExternalUrl(web.url);
   }, [web]);
@@ -173,15 +180,7 @@ function SnapshotBody({ client, query, supported }: PreviewState & Pick<Snapshot
   const local = attachment.localResource;
   return (
     <>
-      <Text selectable style={styles.body} testID="resource-preview-text">
-        {attachment.text}
-      </Text>
-      {local ? (
-        <Text
-          selectable
-          style={styles.source}
-        >{`${local.source.label}\n${local.source.scope}\n${local.source.ref}`}</Text>
-      ) : null}
+      <ResourcePreviewContent key={local?.source.ref ?? web?.url} item={previewItem} />
       {web ? (
         <Button onPress={openWebsite}>{t("composer.pluginAttachments.openWebsite")}</Button>
       ) : null}
@@ -226,21 +225,25 @@ function StoredResourcePreview({
       onClose={onClose}
       testID="plugin-resource-preview"
       contextBridge={null}
+      desktopMaxWidth={720}
+      snapPoints={FULL_SHEET_SNAP_POINTS}
     >
-      <View style={styles.navigation} testID="resource-preview-navigation">
-        <Button variant="ghost" disabled={index === 0} onPress={previous}>
-          {t("composer.pluginAttachments.previousReference")}
-        </Button>
-        <Text style={styles.source}>
-          {t("composer.pluginAttachments.referenceNumber", {
-            index: index + 1,
-            count: reference.count,
-          })}
-        </Text>
-        <Button variant="ghost" disabled={index + 1 === reference.count} onPress={next}>
-          {t("composer.pluginAttachments.nextReference")}
-        </Button>
-      </View>
+      {reference.count > 1 ? (
+        <View style={styles.navigation} testID="resource-preview-navigation">
+          <Button variant="ghost" disabled={index === 0} onPress={previous}>
+            {t("composer.pluginAttachments.previousReference")}
+          </Button>
+          <Text style={styles.source}>
+            {t("composer.pluginAttachments.referenceNumber", {
+              index: index + 1,
+              count: reference.count,
+            })}
+          </Text>
+          <Button variant="ghost" disabled={index + 1 === reference.count} onPress={next}>
+            {t("composer.pluginAttachments.nextReference")}
+          </Button>
+        </View>
+      ) : null}
       <SnapshotBody {...state} client={client} />
     </AdaptiveModalSheet>
   );

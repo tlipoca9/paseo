@@ -1,10 +1,61 @@
-import { useMemo } from "react";
+import { useCallback, useMemo, useState } from "react";
 import type { PluginAttachmentItem } from "@getpaseo/plugin";
-import { Text } from "react-native";
+import { Text, View } from "react-native";
+import { useTranslation } from "react-i18next";
+import { ChevronDown, ChevronUp } from "lucide-react-native";
 import { StyleSheet } from "react-native-unistyles";
-import { AdaptiveModalSheet } from "@/components/adaptive-modal-sheet";
+import { AdaptiveModalSheet, FULL_SHEET_SNAP_POINTS } from "@/components/adaptive-modal-sheet";
+import { Button } from "@/components/ui/button";
 
-export type ResourcePreview = Pick<PluginAttachmentItem, "title" | "text" | "source">;
+export type ResourcePreview = Pick<
+  PluginAttachmentItem,
+  "title" | "text" | "source" | "previewText" | "subtitle"
+>;
+
+export function ResourcePreviewContent({ item }: { item: ResourcePreview }) {
+  const { t } = useTranslation();
+  const [details, setDetails] = useState(false);
+  const toggle = useCallback(() => setDetails((value) => !value), []);
+  const detailsState = useMemo(() => ({ expanded: details }), [details]);
+  return (
+    <>
+      <Text selectable style={styles.body} testID="resource-preview-text">
+        {item.previewText ?? item.text}
+      </Text>
+      {item.source ? (
+        <View style={styles.details}>
+          <Button
+            variant="ghost"
+            onPress={toggle}
+            accessibilityState={detailsState}
+            leftIcon={details ? ChevronUp : ChevronDown}
+            style={styles.detailsButton}
+          >
+            {t("composer.pluginAttachments.referenceDetails")}
+          </Button>
+          {details ? (
+            <View style={styles.detailsContent}>
+              <Text selectable style={styles.source}>
+                {item.source.label}
+              </Text>
+              <Text selectable style={styles.source}>
+                {t("composer.pluginAttachments.referenceAccount", { account: item.source.scope })}
+              </Text>
+              <Text selectable style={styles.source}>
+                {item.source.ref}
+              </Text>
+              {item.previewText !== undefined ? (
+                <Text selectable style={styles.source}>
+                  {item.text}
+                </Text>
+              ) : null}
+            </View>
+          ) : null}
+        </View>
+      ) : null}
+    </>
+  );
+}
 
 export function PluginResourcePreview({
   item,
@@ -13,7 +64,13 @@ export function PluginResourcePreview({
   item: ResourcePreview | null;
   onClose: () => void;
 }) {
-  const header = useMemo(() => ({ title: item?.title ?? "" }), [item?.title]);
+  const header = useMemo(
+    () => ({
+      title: item?.title ?? "",
+      subtitle: item?.subtitle ? <Text style={styles.source}>{item.subtitle}</Text> : undefined,
+    }),
+    [item?.title, item?.subtitle],
+  );
   if (!item) return null;
   return (
     <AdaptiveModalSheet
@@ -22,16 +79,10 @@ export function PluginResourcePreview({
       header={header}
       testID="plugin-resource-preview"
       contextBridge={null}
+      desktopMaxWidth={720}
+      snapPoints={FULL_SHEET_SNAP_POINTS}
     >
-      <Text selectable style={styles.body}>
-        {item.text}
-      </Text>
-      {item.source ? (
-        <Text
-          selectable
-          style={styles.source}
-        >{`${item.source.label}\n${item.source.scope}\n${item.source.ref}`}</Text>
-      ) : null}
+      <ResourcePreviewContent key={item.source?.ref ?? item.title} item={item} />
     </AdaptiveModalSheet>
   );
 }
@@ -40,7 +91,15 @@ const styles = StyleSheet.create((theme) => ({
   body: {
     color: theme.colors.foreground,
     fontSize: theme.fontSize.content,
-    lineHeight: theme.fontSize.content * 1.5,
+    lineHeight: theme.fontSize.content * 1.6,
   },
+  details: {
+    borderTopWidth: 1,
+    borderTopColor: theme.colors.surface2,
+    paddingTop: theme.spacing[3],
+    gap: theme.spacing[3],
+  },
+  detailsButton: { alignSelf: "flex-start" },
+  detailsContent: { gap: theme.spacing[2] },
   source: { color: theme.colors.foregroundMuted, fontSize: theme.fontSize.sm },
 }));

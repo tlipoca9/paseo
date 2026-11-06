@@ -47,6 +47,7 @@ describe("shared messages attachments", () => {
         id: "9223372036854775807",
         identifier: "Message",
         title: "Discussion",
+        previewText: "  原文🙂\n\t末行",
         source: { scope: "account-1", ref: "opaque:9223372036854775807", label: "Team · Alice" },
       },
     };

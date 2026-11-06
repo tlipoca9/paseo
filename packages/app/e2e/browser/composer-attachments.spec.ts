@@ -47,8 +47,88 @@ import {
 } from "../support/helpers/composer";
 import { openAgentRoute, seedMockAgentWorkspace } from "../support/helpers/mock-agent";
 
+function renderedTextColor(element: HTMLElement | SVGElement) {
+  return getComputedStyle(element).color;
+}
+
 test.describe("plugin resource attachments", () => {
   test.use({ timezoneId: "Asia/Shanghai" });
+  test("shows verbatim originals with optional details through draft and saved previews", async ({
+    page,
+  }, info) => {
+    const plugin = await installResourceAttachmentPlugin();
+    const agent = await seedMockAgentWorkspace({
+      repoPrefix: "resource-reader-",
+      title: "Message reader",
+    });
+    const original =
+      "这次发布先保持现有接口，客户端升级后再开启新入口。\n\n" +
+      "搜索结果要显示完整原文，保留上下文。不要把正文改写成摘要，也不要在长消息中间插入省略号。\n\n" +
+      "  请核对两个空格、换行和组合字符：e\u0301 🙂。\n" +
+      "原始内容。".repeat(40) +
+      "\n最后一行：明天下午确认。";
+    try {
+      await plugin.control({ previewText: original });
+      await page.setViewportSize({ width: 1280, height: 900 });
+      await openAgentRoute(page, agent);
+      await expectComposerVisible(page);
+      await openAttachmentMenu(page);
+      await page.getByText("Attach Messages", { exact: true }).click();
+      const picker = page.getByTestId("plugin-attachment-picker");
+      const body = picker.getByTestId("plugin-attachment-original-text").first();
+      await expect.poll(() => body.textContent()).toBe(original);
+      await expect(picker).not.toContainText("Technical reference metadata");
+      await expect(picker).not.toContainText("Index updated:");
+      await picker.getByRole("button", { name: "Add MSG-2", exact: true }).click();
+      await expect(picker).toContainText("1 selected");
+      await page.screenshot({ path: info.outputPath("message-reader-wide.png") });
+      const lightColor = await body.evaluate(renderedTextColor);
+      await page.emulateMedia({ colorScheme: "dark" });
+      await expect.poll(() => body.evaluate(renderedTextColor)).not.toBe(lightColor);
+      await page.screenshot({ path: info.outputPath("message-reader-dark.png") });
+      await picker.getByRole("button", { name: "Preview MSG-2", exact: true }).click();
+      const preview = page.getByTestId("plugin-resource-preview");
+      await expect
+        .poll(() => page.getByTestId("resource-preview-text").textContent())
+        .toBe(original);
+      await expect(preview).not.toContainText("Technical reference metadata");
+      await preview.getByRole("button", { name: "Reference details", exact: true }).click();
+      await expect(preview).toContainText("opaque:account-a:9223372036854775807");
+      await expect(preview).toContainText("Technical reference metadata");
+      await preview.getByRole("button", { name: "Close", exact: true }).click();
+      await picker.getByRole("button", { name: "Done", exact: true }).click();
+      await page.reload({ waitUntil: "domcontentloaded" });
+      await page.getByTestId("composer-plugin-resource-attachment-pill").click();
+      await expect
+        .poll(() => page.getByTestId("resource-preview-text").textContent())
+        .toBe(original);
+      await preview.getByRole("button", { name: "Close", exact: true }).click();
+      await submitMessage(page, "Read this reference");
+      await expectAgentIdle(page, 15_000);
+      await page.reload({ waitUntil: "domcontentloaded" });
+      await page.getByTestId("message-local-resource").click();
+      await expect
+        .poll(() => page.getByTestId("resource-preview-text").textContent())
+        .toBe(original);
+      await expect(preview).not.toContainText("Technical reference metadata");
+      await page.screenshot({ path: info.outputPath("message-preview-wide.png") });
+      await preview.getByRole("button", { name: "Close", exact: true }).click();
+      await page.setViewportSize({ width: 375, height: 844 });
+      await openAttachmentMenu(page);
+      await page.getByText("Attach Messages", { exact: true }).click();
+      const compactBody = page.getByTestId("plugin-attachment-original-text").first();
+      await expect.poll(() => compactBody.textContent()).toBe(original);
+      await expect(page.getByRole("button", { name: "Done", exact: true })).toBeInViewport();
+      await page.screenshot({ path: info.outputPath("message-reader-compact.png") });
+      const bounds = await compactBody.boundingBox();
+      expect(bounds).not.toBeNull();
+      expect(bounds!.x).toBeGreaterThanOrEqual(0);
+      expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(375);
+    } finally {
+      await agent.cleanup();
+      await plugin.cleanup();
+    }
+  });
   test("loads labeled filter candidates independently and preserves remote matches", async ({
     page,
   }) => {
@@ -335,6 +415,10 @@ test.describe("plugin resource attachments", () => {
       });
       await page.screenshot({ path: info.outputPath("same-query-account-b.png") });
       await picker.getByRole("button", { name: "Preview MSG-2", exact: true }).click();
+      await page
+        .getByTestId("plugin-resource-preview")
+        .getByRole("button", { name: "Reference details", exact: true })
+        .click();
       await expect(page.getByTestId("plugin-resource-preview")).toContainText(
         "opaque:account-b:9223372036854775807",
       );
@@ -411,6 +495,10 @@ test.describe("plugin resource attachments", () => {
       await expect(picker.getByTestId("plugin-attachment-result")).toHaveCount(2);
       await plugin.control({ releaseContext: true });
       await picker.getByRole("button", { name: "Preview MSG-2", exact: true }).click();
+      await page
+        .getByTestId("plugin-resource-preview")
+        .getByRole("button", { name: "Reference details", exact: true })
+        .click();
       await expect(page.getByTestId("plugin-resource-preview")).toContainText(
         "opaque:account-b:9223372036854775807",
       );

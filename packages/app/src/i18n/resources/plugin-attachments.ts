@@ -1,4 +1,8 @@
 export const pluginAttachments = {
+  selectedCount: "{{count}} selected",
+  referenceDetails: "Reference details",
+  referenceAccount: "Account: {{account}}",
+  searchDetails: "Search details",
   moreReferences: "{{count}} more references",
   previousReference: "Previous",
   nextReference: "Next",
@@ -38,6 +42,10 @@ export const pluginAttachments = {
   offline: "Connect to this host to search attachments.",
 };
 export const pluginAttachmentsZh = {
+  selectedCount: "已选 {{count}} 条",
+  referenceDetails: "引用详情",
+  referenceAccount: "账号：{{account}}",
+  searchDetails: "查询详情",
   moreReferences: "另 {{count}} 条引用",
   previousReference: "上一条",
   nextReference: "下一条",

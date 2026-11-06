@@ -37,6 +37,40 @@ const item = {
 };
 
 describe("plugin resource attachments", () => {
+  it("preserves verbatim preview text through draft, submission and saved snapshot decoding", async () => {
+    const previewText = "  原文🙂 e\u0301\n\t第二行\n" + "完整正文".repeat(500);
+    const draft = createPluginResourceAttachment(source, {
+      ...item,
+      url: undefined,
+      previewText,
+      text: `Technical metadata\n\n${previewText}`,
+      source: { scope: "account", ref: "opaque-ref", label: "Alice · Project" },
+    });
+    const restored = PluginResourceComposerAttachmentSchema.parse(
+      JSON.parse(JSON.stringify(draft)),
+    );
+    expect(restored.item.previewText).toBe(previewText);
+    const attachment = pluginResourceAttachmentToAgentAttachment(restored);
+    const text = JSON.stringify(attachment);
+    const bytes = Buffer.from(text);
+    const sha256 = async (value: string) => createHash("sha256").update(value).digest("hex");
+    const saved = await readResourceAttachment({
+      request: { agentId: "agent", clientMessageId: "message", index: 0 },
+      signal: new AbortController().signal,
+      sha256,
+      read: async () => ({
+        offset: 0,
+        nextOffset: bytes.length,
+        totalBytes: bytes.length,
+        encoding: "base64",
+        data: bytes.toString("base64"),
+        sha256: await sha256(text),
+      }),
+    });
+    expect(saved.localResource?.previewText).toBe(previewText);
+    expect(saved.text).toContain(`Technical metadata\n\n${previewText}`);
+    expect(saved.text).toContain("Reference: opaque-ref");
+  });
   it("reconstructs resource snapshot UTF-8 across chunks and rejects missing, stale or corrupt data", async () => {
     const attachment = pluginResourceAttachmentToAgentAttachment(
       createPluginResourceAttachment(source, item),

@@ -2583,7 +2583,7 @@ query syntax or field names. Filter labels and static option labels accept `Plug
 | `PluginAttachmentFilterOptionsInputSchema` / `PluginAttachmentFilterOptionsInput`     | `{ scope: string, filterId: string, query: string, cursor?: string }`                                                                  |
 | `PluginAttachmentFilterOptionsPayloadSchema` / `PluginAttachmentFilterOptionsPayload` | `{ scope: string, items: { value: string, label: string }[], coverage: { truncated: boolean, nextCursor?: string }, status?, error? }` |
 | `PluginAttachmentSearchPayloadSchema` / `PluginAttachmentSearchPayload`               | `{ items: PluginAttachmentItem[], coverage?, index?, status?, error? }`                                                                |
-| `PluginAttachmentItemSchema` / `PluginAttachmentItem`                                 | `{ id, identifier, title, text, resourceType, subtitle?, url?, source? }`; all scalar fields are strings                               |
+| `PluginAttachmentItemSchema` / `PluginAttachmentItem`                                 | `{ id, identifier, title, text, resourceType, subtitle?, previewText?, url?, source? }`; all scalar fields are strings                 |
 | `source` on an item                                                                   | `{ scope: string, ref: string, label: string }`; scope and ref are nonempty, opaque strings                                            |
 
 Each item needs a valid URL or a complete local source. `localResources: true` declares URL-less
@@ -2591,6 +2591,13 @@ results; both it and `filterOptions` require `context`. Preserve identifiers as 
 including numeric-looking option values and 64-bit message IDs. Local identity is
 plugin + source ID + account scope + opaque ref. A web item's identity combines plugin, source ID,
 and item ID. Changing a display name does not create another local resource.
+
+For local resources, optional `previewText` separates the complete original text shown to readers
+from an agent-facing `text` payload that includes technical metadata. Supply the verbatim body,
+including whitespace and the final line. The host displays it without summarizing or truncating it,
+preserves it in drafts and sent snapshots, and keeps the full payload and source under reference
+details. Omitting it preserves the existing preview behavior. Use a human-readable `identifier`;
+it labels attachment actions and selected references.
 
 ### Account context and candidate options
 

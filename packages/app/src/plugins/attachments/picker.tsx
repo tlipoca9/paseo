@@ -10,13 +10,14 @@ import {
 } from "react";
 import { useTranslation } from "react-i18next";
 import { Text, View } from "react-native";
+import { Check, ChevronDown, Circle, Eye } from "lucide-react-native";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import type { DaemonClient } from "@getpaseo/client/internal/daemon-client";
 import type { PluginAttachmentItem, PluginSerializableIcon } from "@getpaseo/plugin";
 import type { PluginAttachmentSourceContribution, InstalledPlugin } from "../types";
 import type { UserComposerAttachment } from "@/attachments/types";
 import type { AttachmentMenuItem } from "@/composer/input/input";
-import { AdaptiveModalSheet } from "@/components/adaptive-modal-sheet";
+import { AdaptiveModalSheet, FULL_SHEET_SNAP_POINTS } from "@/components/adaptive-modal-sheet";
 import { Button } from "@/components/ui/button";
 import { useFetchQuery } from "@/data/query";
 import { useDebouncedValue } from "@/hooks/use-debounced-value";
@@ -175,9 +176,24 @@ function AttachmentPicker({
     }),
     [active, model],
   );
+  const selectedCount = input.attachments.filter(
+    (attachment) =>
+      attachment.kind === "plugin_resource" &&
+      attachment.pluginId === active.plugin.id &&
+      attachment.sourceId === active.source.id,
+  ).length;
   const footer = useMemo(
-    () => <Button onPress={close}>{t("composer.pluginAttachments.done")}</Button>,
-    [close, t],
+    () => (
+      <>
+        <Text style={styles.secondary}>
+          {t("composer.pluginAttachments.selectedCount", { count: selectedCount })}
+        </Text>
+        <Button variant="default" onPress={close}>
+          {t("composer.pluginAttachments.done")}
+        </Button>
+      </>
+    ),
+    [close, t, selectedCount],
   );
   const closePreview = useCallback(() => model.preview(null), [model]);
   const result = search.data?.result;
@@ -199,6 +215,10 @@ function AttachmentPicker({
         contextBridge={null}
         header={header}
         footer={footer}
+        desktopMaxWidth={720}
+        desktopHeight="85%"
+        snapPoints={FULL_SHEET_SNAP_POINTS}
+        contentStyle={styles.content}
       >
         <View style={styles.filters}>
           {active.source.filters?.map((filter) => (
@@ -207,6 +227,7 @@ function AttachmentPicker({
               id={filter.id}
               label={active.plugin.i18n.resolve(filter.label, active.plugin.locale)}
               display={state.filters[filter.id]?.label ?? t("composer.pluginAttachments.any")}
+              selected={Boolean(state.filters[filter.id])}
               onOpen={model.openFilter}
             />
           ))}
@@ -255,17 +276,31 @@ function FilterTrigger({
   id,
   label,
   display,
+  selected,
   onOpen,
 }: {
   id: string;
   label: string;
   display: string;
+  selected: boolean;
   onOpen: (id: string) => void;
 }) {
   const open = useCallback(() => onOpen(id), [id, onOpen]);
+  const chevron = useMemo(
+    () => <ThemedChevron uniProps={iconColorMapping} size={ICON_SIZE.xs} />,
+    [],
+  );
   return (
-    <Button variant="outline" onPress={open} accessibilityLabel={`${label} (${display})`}>
-      {label}: {display}
+    <Button
+      size="sm"
+      variant={selected ? "secondary" : "ghost"}
+      onPress={open}
+      accessibilityLabel={`${label} (${display})`}
+      numberOfLines={1}
+      style={styles.filter}
+      trailing={chevron}
+    >
+      {selected ? `${label}: ${display}` : label}
     </Button>
   );
 }
@@ -283,35 +318,42 @@ function ResultRow({
   const { t } = useTranslation();
   const select = useCallback(() => onSelect(item), [item, onSelect]);
   const preview = useCallback(() => onPreview(item), [item, onPreview]);
+  const selectionState = useMemo(() => ({ selected }), [selected]);
   return (
     <View style={styles.row} testID="plugin-attachment-result">
-      <View style={styles.description}>
-        <Text style={styles.title}>{item.title}</Text>
-        <Text style={styles.secondary}>{item.subtitle ?? item.identifier}</Text>
+      <View style={styles.rowHeader}>
+        <View style={styles.description}>
+          <Text style={styles.title}>{item.title}</Text>
+          {item.subtitle ? <Text style={styles.secondary}>{item.subtitle}</Text> : null}
+        </View>
+        <View style={styles.actions}>
+          <Button
+            variant="ghost"
+            leftIcon={Eye}
+            accessibilityLabel={t("composer.pluginAttachments.previewItem", {
+              item: item.identifier,
+            })}
+            onPress={preview}
+          />
+          <Button
+            variant={selected ? "secondary" : "ghost"}
+            leftIcon={selected ? Check : Circle}
+            accessibilityState={selectionState}
+            accessibilityLabel={t(
+              selected
+                ? "composer.pluginAttachments.removeItem"
+                : "composer.pluginAttachments.addItem",
+              { item: item.identifier },
+            )}
+            onPress={select}
+          />
+        </View>
       </View>
-      <View style={styles.actions}>
-        <Button
-          variant="ghost"
-          accessibilityLabel={t("composer.pluginAttachments.previewItem", {
-            item: item.identifier,
-          })}
-          onPress={preview}
-        >
-          {t("composer.pluginAttachments.preview")}
-        </Button>
-        <Button
-          variant="outline"
-          accessibilityLabel={t(
-            selected
-              ? "composer.pluginAttachments.removeItem"
-              : "composer.pluginAttachments.addItem",
-            { item: item.identifier },
-          )}
-          onPress={select}
-        >
-          {t(selected ? "composer.pluginAttachments.remove" : "composer.pluginAttachments.add")}
-        </Button>
-      </View>
+      {item.previewText !== undefined ? (
+        <Text selectable style={styles.messageBody} testID="plugin-attachment-original-text">
+          {item.previewText}
+        </Text>
+      ) : null}
     </View>
   );
 }
@@ -362,10 +404,36 @@ export function usePluginAttachmentPicker(
 }
 
 const styles = StyleSheet.create((theme) => ({
-  filters: { flexDirection: "row", flexWrap: "wrap", gap: theme.spacing[2] },
-  row: { gap: theme.spacing[2], paddingVertical: theme.spacing[2] },
-  description: { gap: theme.spacing[1], flex: 1 },
-  title: { fontSize: theme.fontSize.base, color: theme.colors.foreground },
+  content: { gap: theme.spacing[2], paddingVertical: theme.spacing[3] },
+  filters: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: theme.spacing[1],
+    paddingBottom: theme.spacing[2],
+  },
+  filter: { maxWidth: 240 },
+  row: {
+    gap: theme.spacing[3],
+    paddingVertical: theme.spacing[3],
+    borderBottomWidth: 1,
+    borderBottomColor: theme.colors.surface2,
+  },
+  rowHeader: { flexDirection: "row", alignItems: "flex-start", gap: theme.spacing[3] },
+  description: { gap: theme.spacing[1], flex: 1, minWidth: 0 },
+  title: {
+    fontSize: theme.fontSize.base,
+    fontWeight: theme.fontWeight.medium,
+    color: theme.colors.foreground,
+  },
   secondary: { fontSize: theme.fontSize.sm, color: theme.colors.foregroundMuted },
-  actions: { flexDirection: "row", justifyContent: "flex-end", gap: theme.spacing[2] },
+  actions: { flexDirection: "row", gap: theme.spacing[1] },
+  messageBody: {
+    color: theme.colors.foreground,
+    fontSize: theme.fontSize.content,
+    lineHeight: theme.fontSize.content * 1.6,
+    padding: theme.spacing[3],
+    borderRadius: theme.borderRadius.lg,
+    backgroundColor: theme.colors.surface1,
+  },
 }));
+const ThemedChevron = withUnistyles(ChevronDown);

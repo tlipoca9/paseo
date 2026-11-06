@@ -1,6 +1,7 @@
 import { AttachmentQueryFeedback, AttachmentResultFooter } from "./query-feedback";
 import { useCallback, useMemo, useState, useSyncExternalStore } from "react";
 import { Text, View } from "react-native";
+import { Check } from "lucide-react-native";
 import { useFetchQuery } from "@/data/query";
 import { useTranslation } from "react-i18next";
 import { StyleSheet } from "react-native-unistyles";
@@ -37,14 +38,23 @@ export function AttachmentFilterPicker(props: FilterPickerProps) {
 
 function OptionRow({
   option,
+  selected,
   onSelect,
 }: {
   option: PluginAttachmentFilterOption;
+  selected: boolean;
   onSelect: (option: PluginAttachmentFilterOption) => void;
 }) {
   const select = useCallback(() => onSelect(option), [option, onSelect]);
+  const selectionState = useMemo(() => ({ selected }), [selected]);
   return (
-    <Button variant="ghost" onPress={select}>
+    <Button
+      variant={selected ? "secondary" : "ghost"}
+      onPress={select}
+      style={styles.option}
+      accessibilityState={selectionState}
+      leftIcon={selected ? Check : undefined}
+    >
       {option.label}
     </Button>
   );
@@ -164,7 +174,12 @@ function OptionFilterPicker({
         onRetry={retry}
       />
       {candidates.map((option) => (
-        <OptionRow key={option.value} option={option} onSelect={select} />
+        <OptionRow
+          key={option.value}
+          option={option}
+          selected={state.filters[filter.id]?.value === option.value}
+          onSelect={select}
+        />
       ))}
       {!pending ? <AttachmentResultFooter result={last} onMore={loadMore} /> : null}
     </AdaptiveModalSheet>
@@ -219,6 +234,7 @@ function DateFilterPicker({ filter, plugin, model }: FilterPickerProps) {
   );
 }
 const styles = StyleSheet.create((theme) => ({
+  option: { justifyContent: "flex-start" },
   secondary: { color: theme.colors.foregroundMuted, fontSize: theme.fontSize.sm },
   actions: { flexDirection: "row", gap: theme.spacing[2], justifyContent: "flex-end" },
 }));
