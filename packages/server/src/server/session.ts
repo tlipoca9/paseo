@@ -5468,7 +5468,6 @@ export class Session {
     try {
       let result: import("@getpaseo/protocol/messages").AgentExecutionGuideResult | undefined;
       await sendPromptToAgent({
-        agentMessages: this.agentMessages,
         agentManager: this.agentManager,
         agentStorage: this.agentStorage,
         agentId: msg.agentId,
@@ -9341,9 +9340,7 @@ export class Session {
                 ? (this.agentManager.getAgent(msg.sourceAgentId)?.config.title ?? undefined)
                 : undefined,
             },
-            activeTurnBehavior: msg.expectedExecution
-              ? (requested ?? "steer")
-              : this.agentSenderBehavior(requested),
+            activeTurnBehavior: this.agentSenderBehavior(requested),
             sessionMode: msg.sessionMode,
             clearPendingPermissions: false,
           });

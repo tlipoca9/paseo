@@ -81,7 +81,6 @@ async function steerOrReplaceActiveRun(
       messageId: options.runOptions?.clientMessageId ?? "",
       inputOrigin: options.runOptions?.inputOrigin,
       deliveryScope: options.runOptions?.deliveryScope,
-      promptStart,
     });
     options.onExecutionGuided?.(guided.result);
     return guided.iterator

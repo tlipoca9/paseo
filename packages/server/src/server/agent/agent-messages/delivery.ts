@@ -50,7 +50,6 @@ interface Admitted extends Message {
   /** A Stop found it in the queue. It waits for a prompt admitted after that Stop. */
   held: boolean;
   outOfBandDeclined: boolean;
-  inFlight?: boolean;
   receipt: Receipt;
   resolve(disposition: PromptDispatchDisposition): void;
   reject(error: unknown): void;
@@ -309,10 +308,7 @@ export function createAgentMessageDelivery(dependencies: Dependencies): AgentMes
 
   /** A dispatch that did not happen leaves its messages queued, each still in its place. */
   function handBack(messages: Admitted[]): void {
-    for (const message of messages) {
-      message.inFlight = false;
-      if (message.state === "claimed") message.state = "queued";
-    }
+    for (const message of messages) if (message.state === "claimed") message.state = "queued";
   }
 
   function fail(message: Admitted, error: unknown): void {
@@ -356,7 +352,6 @@ export function createAgentMessageDelivery(dependencies: Dependencies): AgentMes
       try {
         for (const message of messages) {
           message.deliveryScope?.assertActive();
-          message.inFlight = true;
           message.beforeDispatch?.();
         }
         let disposition: PromptDispatchDisposition;
@@ -638,7 +633,7 @@ export function createAgentMessageDelivery(dependencies: Dependencies): AgentMes
       };
       if (message.deliveryScope) {
         const revoked = () => {
-          if (admitted.state !== "queued" || admitted.inFlight) return;
+          if (admitted.state !== "queued") return;
           settle(admitted, "withdrawn");
           reject(new DeliveryRevokedError());
         };
@@ -662,9 +657,7 @@ export function createAgentMessageDelivery(dependencies: Dependencies): AgentMes
       const ahead =
         closed || isCommand(direct.prompt)
           ? []
-          : (inboxes.get(direct.recipientId)?.messages ?? []).filter(
-              (message) => !message.deliveryScope && !message.expectedExecution,
-            );
+          : [...(inboxes.get(direct.recipientId)?.messages ?? [])];
       return new Promise<Result>((resolve, reject) => {
         run(direct.recipientId, async () => {
           const riders = ahead.filter(isQueued);

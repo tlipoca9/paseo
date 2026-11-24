@@ -952,8 +952,8 @@ test("SDK captured stop cannot cancel a later human run or a reloaded runtime wi
     const reloaded = await agent.captureExecution();
     expect(reloaded?.turnId).toBe(captured?.turnId);
     expect(reloaded?.runtimeId).not.toBe(captured?.runtimeId);
-    await expect(agent.stopExecution(human!)).resolves.toMatchObject({ status: "stopped" });
-    expect(stopCalls).toBe(2);
+    await expect(agent.stopExecution(human!)).resolves.toMatchObject({ status: "superseded" });
+    expect(stopCalls).toBe(1);
     expect(interrupts).toBe(1);
   } finally {
     finish();
@@ -1045,7 +1045,7 @@ test("SDK peer messages retain provenance and expose durable delivery receipts",
       sourceAgentId: sender.id,
       expectedExecution: execution!,
     };
-    expect(await agent.sendWithReceipt("Check the boundary", options)).toMatchObject({
+    expect(await agent.sendWithReceipt("Check the boundary", options)).toEqual({
       deliveryStatus: "queued",
     });
     expect(await agent.messageReceipt(options.messageId)).toMatchObject({ status: "queued" });
@@ -1916,26 +1916,8 @@ test("execution recovery admission fails closed on persistence failure and never
     const old = await agent.captureExecution();
     await agent.send("new human run");
     const current = await agent.captureExecution();
-    const directMessages = {
-      sendDirect: <Result,>(
-        direct: { prompt: string; messageId?: string; sessionMode?: string; unarchive?: boolean },
-        send: (joined: {
-          prompt: string;
-          messageId?: string;
-          sessionMode?: string;
-          unarchive: boolean;
-        }) => Promise<Result>,
-      ) =>
-        send({
-          prompt: direct.prompt,
-          messageId: direct.messageId,
-          sessionMode: direct.sessionMode,
-          unarchive: direct.unarchive !== false,
-        }),
-    };
     await expect(
       sendPromptToAgent({
-        agentMessages: directMessages,
         agentId: agent.id,
         prompt: "stale startup continuation",
         agentManager: daemon.daemon.agentManager,
@@ -1949,7 +1931,6 @@ test("execution recovery admission fails closed on persistence failure and never
     expect(prompts).toEqual(["first human run", "new human run"]);
     expect(await agent.stopExecution(current!)).toEqual({ status: "stopped" });
     await sendPromptToAgent({
-      agentMessages: directMessages,
       agentId: agent.id,
       prompt: "stale startup continuation",
       agentManager: daemon.daemon.agentManager,
