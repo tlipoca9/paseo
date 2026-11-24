@@ -40,6 +40,35 @@ const response = z.object({
     .optional(),
 });
 
+export type AgyUsageGroup = NonNullable<z.infer<typeof response>["command"]>["data"]["groups"][number];
+
+export async function fetchAgyUsageGroups(launch: ProviderLaunch): Promise<AgyUsageGroup[]> {
+  const acpIndex = launch.args.indexOf("acp");
+  if (acpIndex < 0) throw new Error("Antigravity launch does not contain the acp subcommand");
+  let result;
+  try {
+    result = await execCommand(
+      launch.command,
+      [...launch.args.slice(0, acpIndex), "-p", "/usage", "--output-format", "json"],
+      {
+        env: launch.env,
+        timeout: 18_000,
+        maxBuffer: 1024 * 1024,
+      },
+    );
+  } catch {
+    throw new Error(
+      "Antigravity usage command failed or timed out. Check that agy is signed in.",
+    );
+  }
+  const data = response.parse(JSON.parse(result.stdout));
+  if (data.status !== "SUCCESS") {
+    throw new Error(data.error || data.response || `agy usage returned ${data.status}`);
+  }
+  if (!data.command) throw new Error("agy did not return usage data");
+  return data.command.data.groups;
+}
+
 function accountKey(env: ProviderLaunch["env"]): string {
   return hashAccountKey(
     path.resolve(
@@ -107,30 +136,7 @@ export class Usage {
         const { launch: locator } = input.parse(value);
         const launch = this.launches.get(locator);
         if (!launch) throw new Error("Antigravity launch no longer exists");
-        const acpIndex = launch.args.indexOf("acp");
-        if (acpIndex < 0) throw new Error("Antigravity launch does not contain the acp subcommand");
-        let result;
-        try {
-          result = await execCommand(
-            launch.command,
-            [...launch.args.slice(0, acpIndex), "-p", "/usage", "--output-format", "json"],
-            {
-              env: launch.env,
-              timeout: 18_000,
-              maxBuffer: 1024 * 1024,
-            },
-          );
-        } catch {
-          throw new Error(
-            "Antigravity usage command failed or timed out. Check that agy is signed in.",
-          );
-        }
-        const data = response.parse(JSON.parse(result.stdout));
-        if (data.status !== "SUCCESS") {
-          throw new Error(data.error || data.response || `agy usage returned ${data.status}`);
-        }
-        if (!data.command) throw new Error("agy did not return usage data");
-        const groups = data.command.data.groups;
+        const groups = await fetchAgyUsageGroups(launch);
         const includeGroup = groups.length > 1;
         const windows = groups.flatMap((group) => {
           const groupLabel = formatGroupLabel(group.name);

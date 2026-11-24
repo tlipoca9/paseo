@@ -6,6 +6,7 @@ import {
   type ProviderRegistration,
 } from "@getpaseo/plugin/server/provider";
 import { z } from "zod";
+import { wrapQuotaAutoResumeConnection } from "./quota-resume.js";
 import { mapToolCall } from "./tool-calls.js";
 
 const legacySession = z.object({
@@ -144,6 +145,10 @@ export function createAntigravityProvider(): ProviderRegistration {
   });
   return {
     ...provider,
+    async connect(request) {
+      const connection = await provider.connect(request);
+      return wrapQuotaAutoResumeConnection(connection, { launch: request.launch });
+    },
     docsUrl: "https://paseo.sh/docs/supported-providers/antigravity#troubleshooting",
     // agy documents no update command and no release source, so there is nothing to check or run.
     installation: {
