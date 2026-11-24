@@ -85,7 +85,6 @@ interface FakeAgentSessionOptions {
   steerActiveTurn?: AgentSession["steerActiveTurn"];
   onInterrupt?: () => void;
   beforeSetMode?: (modeId: string) => Promise<void>;
-  confirmStop?: () => Promise<void>;
   historyEvents?: readonly AgentStreamEvent[];
 }
 
@@ -98,7 +97,6 @@ export interface TestAgentClientOptions {
   steerActiveTurn?: AgentSession["steerActiveTurn"];
   onInterrupt?: () => void;
   beforeSetMode?: (modeId: string) => Promise<void>;
-  confirmStop?: () => Promise<void>;
   supportsMcpServers?: boolean;
   historyEvents?: readonly AgentStreamEvent[];
 }
@@ -370,10 +368,8 @@ class FakeAgentSession implements AgentSession {
   private readonly subscribers = new Set<(event: AgentStreamEvent) => void>();
   private nextTurnOrdinal = 0;
   private activeForegroundTurnId: string | null = null;
-  private readonly turnCompletions = new Map<string, Promise<void>>();
 
   readonly steerActiveTurn: AgentSession["steerActiveTurn"];
-  readonly stopTurn: AgentSession["stopTurn"];
   private readonly onInterrupt: (() => void) | undefined;
   private readonly beforeSetMode: ((modeId: string) => Promise<void>) | undefined;
   private readonly closeSession: (() => Promise<void>) | undefined;
@@ -393,15 +389,6 @@ class FakeAgentSession implements AgentSession {
     this.steerActiveTurn = options.steerActiveTurn;
     this.onInterrupt = options.onInterrupt;
     this.beforeSetMode = options.beforeSetMode;
-    this.stopTurn = options.confirmStop
-      ? async (turnId) => {
-          const completion = this.turnCompletions.get(turnId);
-          if (!completion) throw new Error("Unknown provider turn");
-          if (this.activeForegroundTurnId === turnId) await this.interrupt();
-          await options.confirmStop!();
-          await completion;
-        }
-      : undefined;
     this.closeSession = options.closeSession;
     this.onStartTurn = options.onStartTurn;
     this.beforeTurnComplete = options.beforeTurnComplete;
@@ -497,7 +484,7 @@ class FakeAgentSession implements AgentSession {
     this.activeForegroundTurnId = turnId;
     this.onStartTurn?.(prompt, this.config);
 
-    this.turnCompletions.set(turnId, this.emitTurnEvents(prompt));
+    void this.emitTurnEvents(prompt);
 
     return { turnId };
   }
@@ -901,7 +888,7 @@ class FakeAgentSession implements AgentSession {
         this.notifySubscribers(assistantChunkB);
       }
 
-      await Promise.race([this.beforeTurnComplete?.(prompt), this.interruptSignal.promise]);
+      await this.beforeTurnComplete?.(prompt);
       const completed: AgentStreamEvent = {
         type: "turn_completed",
         provider: this.providerName,
@@ -1330,7 +1317,6 @@ class FakeAgentClient implements AgentClient {
       steerActiveTurn: this.options.steerActiveTurn,
       onInterrupt: this.options.onInterrupt,
       beforeSetMode: this.options.beforeSetMode,
-      confirmStop: this.options.confirmStop,
       historyEvents: this.options.historyEvents,
     });
   }
@@ -1362,7 +1348,6 @@ class FakeAgentClient implements AgentClient {
       steerActiveTurn: this.options.steerActiveTurn,
       onInterrupt: this.options.onInterrupt,
       beforeSetMode: this.options.beforeSetMode,
-      confirmStop: this.options.confirmStop,
       historyEvents: this.options.historyEvents,
     });
   }

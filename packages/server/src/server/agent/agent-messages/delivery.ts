@@ -4,9 +4,6 @@ import {
   type PromptDispatchDisposition,
   type PromptDispatchResult,
 } from "../agent-prompt.js";
-import { DeliveryRevokedError, type DeliveryScope } from "../delivery-scopes.js";
-import type { AgentInputOrigin } from "@getpaseo/protocol/agent-types";
-import type { AgentExecution, AgentExecutionGuideResult } from "@getpaseo/protocol/messages";
 import { randomUUID } from "node:crypto";
 import type { AgentPromptInput, AgentPromptContentBlock } from "../agent-sdk-types.js";
 import { envelopeMessage, prepareAgentMessage, type AgentPromptSource } from "./envelope.js";
@@ -18,11 +15,7 @@ const QUIET_MS = 2000;
 const MAX_COLLECTING_MS = 10_000;
 
 interface Message {
-  deliveryScope?: DeliveryScope;
-  inputOrigin?: AgentInputOrigin;
   recipientId: string;
-  expectedExecution?: AgentExecution;
-  onExecutionGuided?: (result: AgentExecutionGuideResult) => void;
   messageId?: string;
   source: AgentPromptSource;
   prompt: AgentPromptInput;
@@ -77,11 +70,7 @@ interface Inbox {
   stops: number;
 }
 interface DispatchRequest {
-  deliveryScope?: DeliveryScope;
-  inputOrigin?: AgentInputOrigin;
   recipientId: string;
-  expectedExecution?: AgentExecution;
-  onExecutionGuided?: (result: AgentExecutionGuideResult) => void;
   messageIds: readonly string[];
   prompt: AgentPromptInput;
   activeTurnBehavior: "steer" | "interrupt";
@@ -184,19 +173,13 @@ function envelope(message: Admitted): AgentPromptInput {
   return prepareAgentMessage(message.prompt, message.source, message.receipt.messageId).prompt;
 }
 
-/** Explicitly conflicting session modes, scopes, or expected executions require separate, ordered dispatches. */
+/** Explicitly conflicting session modes require separate, ordered dispatches. */
 function modeGroups(messages: Admitted[]): Admitted[][] {
   const groups: Admitted[][] = [];
   let group: Admitted[] = [];
   let mode: string | undefined;
   for (const message of messages) {
-    if (
-      group.length &&
-      (Boolean(message.deliveryScope) ||
-        Boolean(group[0]!.deliveryScope) ||
-        (mode && message.sessionMode && mode !== message.sessionMode) ||
-        JSON.stringify(message.expectedExecution) !== JSON.stringify(group[0]!.expectedExecution))
-    ) {
+    if (mode && message.sessionMode && mode !== message.sessionMode) {
       groups.push(group);
       group = [];
       mode = undefined;
@@ -246,20 +229,9 @@ export function createAgentMessageDelivery(dependencies: Dependencies): AgentMes
   ): DispatchRequest {
     return {
       recipientId,
-      deliveryScope: messages[0]?.deliveryScope,
-      inputOrigin: messages[0]?.inputOrigin,
-      expectedExecution: messages[0]?.expectedExecution,
-      onExecutionGuided: (result) => {
-        for (const message of messages) message.onExecutionGuided?.(result);
-      },
       idleOnly,
       admit() {
-        if (
-          messages.some(isWithdrawn) ||
-          messages.some((message) => message.deliveryScope?.signal.aborted) ||
-          stopped()
-        )
-          return false;
+        if (messages.some(isWithdrawn) || stopped()) return false;
         for (const message of messages) message.state = "claimed";
         return true;
       },
@@ -350,10 +322,7 @@ export function createAgentMessageDelivery(dependencies: Dependencies): AgentMes
       if (!messages.length) return;
       const request = requestFor(recipientId, messages, idleOnly && !closed, stopped);
       try {
-        for (const message of messages) {
-          message.deliveryScope?.assertActive();
-          message.beforeDispatch?.();
-        }
+        for (const message of messages) message.beforeDispatch?.();
         let disposition: PromptDispatchDisposition;
         try {
           disposition = await dependencies.dispatch(request);
@@ -621,7 +590,7 @@ export function createAgentMessageDelivery(dependencies: Dependencies): AgentMes
         }),
         dispatched,
       };
-      const admitted: Admitted = {
+      admit({
         ...message,
         receipt,
         resolve,
@@ -630,23 +599,7 @@ export function createAgentMessageDelivery(dependencies: Dependencies): AgentMes
         urgency: activeTurnBehavior === "queue" ? null : activeTurnBehavior,
         held: false,
         outOfBandDeclined: false,
-      };
-      if (message.deliveryScope) {
-        const revoked = () => {
-          if (admitted.state !== "queued") return;
-          settle(admitted, "withdrawn");
-          reject(new DeliveryRevokedError());
-        };
-        message.deliveryScope.signal.addEventListener("abort", revoked, { once: true });
-        void dispatched
-          .finally(() => message.deliveryScope!.signal.removeEventListener("abort", revoked))
-          .catch(() => undefined);
-        if (message.deliveryScope.signal.aborted) {
-          revoked();
-          return receipt;
-        }
-      }
-      admit(admitted);
+      });
       return receipt;
     },
     sendDirect<Result extends PromptDispatchResult>(

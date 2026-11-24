@@ -3,8 +3,6 @@ import type { z } from "zod";
 import type { PluginHookAgent } from "./lifecycle.js";
 
 export interface AgentToolContext {
-  /** Execution admitted by the host before the tool handler starts. */
-  execution?: import("@getpaseo/protocol/messages").AgentExecution | null;
   agent: PluginHookAgent;
   paseo: PaseoApi;
   signal: AbortSignal;

@@ -1,4 +1,3 @@
-import { AgentMessageReceiptSchema, type AgentMessageReceipt } from "@getpaseo/protocol/messages";
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
@@ -9,7 +8,6 @@ const ReceiptSchema = z.object({
   fingerprint: z.string(),
   state: z.enum(["pending", "completed"]),
   agentId: z.string(),
-  delivery: AgentMessageReceiptSchema.optional(),
 });
 interface SendMessageInput {
   agentId: string;
@@ -19,23 +17,13 @@ interface SendMessageInput {
    * Delivers the message. It awaits `beforeDispatch` immediately before the provider can receive
    * the message; a failure before that call proves nothing was submitted and leaves no receipt.
    */
-  send: (beforeDispatch: () => Promise<void>) => Promise<void | AgentMessageReceipt>;
-  prepare?: () => Promise<void>;
+  send: (beforeDispatch: () => Promise<void>) => Promise<void>;
 }
 
 /** Owns message delivery receipts; creation is owned by CreationService. */
 export class MessageReceipts {
   private readonly pending = new Map<string, Promise<void>>();
   constructor(private readonly directory: string) {}
-
-  async get(agentId: string, messageId: string): Promise<AgentMessageReceipt> {
-    const key = digest(["send", agentId, messageId]);
-    const receipt = await readReceipt(path.join(this.directory, key + ".json"));
-    if (!receipt) return { status: "not_found" };
-    if (receipt.delivery) return receipt.delivery;
-    if (receipt.state === "completed") return { status: "delivered" };
-    return { status: this.pending.has(key) ? "queued" : "unknown" };
-  }
 
   send(input: SendMessageInput): Promise<void> {
     // Preserve the existing on-disk identity and shape across daemon upgrades.
@@ -59,22 +47,17 @@ export class MessageReceipts {
     const existing = await readReceipt(file);
     if (existing) {
       if (existing.fingerprint !== fingerprint) throw new Error("agent_request_key_conflict");
-      if (existing.state === "completed" && !existing.delivery?.retryable) return;
+      if (existing.state === "completed") return;
       // A provider may have accepted the message before its receipt was committed.
-      if (!existing.delivery?.retryable) throw new Error("agent_request_outcome_unknown");
+      throw new Error("agent_request_outcome_unknown");
     }
-    await input.prepare?.();
     const receipt = { fingerprint, agentId: input.agentId };
     let pending: Promise<void> | null = null;
-    const delivery = await input.send(() => {
+    await input.send(() => {
       pending ??= writeJsonFileAtomic(file, { ...receipt, state: "pending" });
       return pending;
     });
-    await writeJsonFileAtomic(file, {
-      ...receipt,
-      state: "completed",
-      ...(delivery ? { delivery } : {}),
-    });
+    await writeJsonFileAtomic(file, { ...receipt, state: "completed" });
   }
 }
 

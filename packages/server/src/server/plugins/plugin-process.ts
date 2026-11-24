@@ -131,13 +131,11 @@ export function createPluginWorker(options: {
   let daemonClient: DaemonClient | null = null;
   let paseo: PaseoApi | null = null;
   let stopping = false;
-  let disconnected = false;
   function send(message: PluginProcessMessage): void {
-    if (!disconnected) channel.send(message);
+    channel.send(message);
   }
 
   function sendAndWait(message: PluginProcessMessage): Promise<void> {
-    if (disconnected) return Promise.resolve();
     return new Promise((resolve) => {
       channel.send(message, () => resolve());
     });
@@ -543,7 +541,6 @@ export function createPluginWorker(options: {
     await sendAndWait({ type: "paseo_close" });
     daemonClient = null;
     paseo = null;
-    disconnected = true;
     channel.disconnect();
   }
 
@@ -616,14 +613,7 @@ export function createPluginWorker(options: {
         return true;
       }
       void agentTools
-        .call(
-          message.requestId,
-          message.agent,
-          message.name,
-          message.input,
-          paseo,
-          message.execution,
-        )
+        .call(message.requestId, message.agent, message.name, message.input, paseo)
         .then((output) =>
           send({
             type: "result",
@@ -926,12 +916,8 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const handlers = new Set<(message: PluginProcessRequest) => void>();
   const channel: PluginWorkerChannel = {
     send(message, callback) {
-      if (!process.connected || !process.send) {
-        callback?.();
-        return;
-      }
-      // A disconnect can race this check; Node reports it through the callback.
-      process.send(message, () => callback?.());
+      if (callback) process.send?.(message, () => callback());
+      else process.send?.(message);
     },
     onMessage(handler) {
       handlers.add(handler);
@@ -940,7 +926,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
       };
     },
     disconnect() {
-      if (process.connected) process.disconnect();
+      process.disconnect();
     },
   };
   process.on("message", (raw) => {
