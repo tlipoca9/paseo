@@ -1593,17 +1593,46 @@ export class VoiceAssistantWebSocketServer {
     if (initialHello) await this.handleHelloSafely({ ws, message: initialHello, pending });
   }
 
+  private inferMobileClient(params: {
+    capabilities?: Record<string, unknown> | null;
+    origin?: string;
+    userAgent?: string;
+    transport?: string;
+  }): boolean {
+    if (params.capabilities && "browser_host" in params.capabilities) return false;
+    if (params.origin === "paseo://app") return false;
+    const ua = params.userAgent ?? "";
+    if (/\bElectron\b/i.test(ua)) return false;
+    if (/\b(iPhone|iPad|Android|CFNetwork|okhttp)\b/i.test(ua)) return true;
+    if (
+      params.transport === "relay" &&
+      !/\b(Macintosh|Windows NT|X11|Chrome\/|Firefox\/|Safari\/)\b/i.test(ua)
+    ) {
+      return true;
+    }
+    return false;
+  }
+
   private createSessionConnection(params: {
     ws: WebSocketLike;
     clientId: string;
     appVersion: string | null;
+    inferredMobile?: boolean;
     clientCapabilities: Record<string, unknown> | null;
     connectionLogger: pino.Logger;
     lifecycle: { kind: "reconnectable" } | { kind: "ephemeral-plugin"; pluginId: string };
     admission: SessionAdmission;
   }): SessionConnection {
-    const { ws, clientId, appVersion, clientCapabilities, connectionLogger, lifecycle, admission } =
-      params;
+    const {
+      ws,
+      clientId,
+      appVersion,
+      inferredMobile,
+      clientCapabilities,
+      connectionLogger,
+      lifecycle,
+      admission,
+    } = params;
     let connection: SessionConnection | null = null;
 
     const session = this.createSocketSession({
@@ -1678,7 +1707,7 @@ export class VoiceAssistantWebSocketServer {
       lifecycle.kind === "ephemeral-plugin"
         ? { ...base, lifecycle: "ephemeral-plugin", pluginId: lifecycle.pluginId }
         : { ...base, lifecycle: "reconnectable", externalDisconnectCleanupTimeout: null };
-    session.updateClientCapabilities(clientCapabilities, ws, appVersion);
+    session.updateClientCapabilities(clientCapabilities, ws, appVersion, inferredMobile);
     return connection;
   }
 
@@ -1882,6 +1911,12 @@ export class VoiceAssistantWebSocketServer {
       ws,
       clientId,
       appVersion: message.appVersion ?? null,
+      inferredMobile: this.inferMobileClient({
+        capabilities: message.capabilities ?? null,
+        origin: pending.identity.origin,
+        userAgent: pending.identity.userAgent,
+        transport: pending.identity.transport,
+      }),
       clientCapabilities: message.capabilities ?? null,
       connectionLogger,
       lifecycle: pluginId ? { kind: "ephemeral-plugin", pluginId } : { kind: "reconnectable" },
@@ -2021,7 +2056,17 @@ export class VoiceAssistantWebSocketServer {
     // COMPAT(selectiveAgentTimeline): added in v0.1.106. Every capable resumed
     // hello resets membership before server_info so stale retained-session
     // state cannot leak. Remove after 2027-01-12.
-    existing.session.updateClientCapabilities(newClientCapabilities, ws, newAppVersion);
+    existing.session.updateClientCapabilities(
+      newClientCapabilities,
+      ws,
+      newAppVersion,
+      this.inferMobileClient({
+        capabilities: newClientCapabilities,
+        origin: pending.identity.origin,
+        userAgent: pending.identity.userAgent,
+        transport: pending.identity.transport,
+      }),
+    );
     if (
       JSON.stringify(existing.clientCapabilities ?? null) !==
       JSON.stringify(newClientCapabilities ?? null)

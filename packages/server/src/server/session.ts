@@ -1,4 +1,10 @@
 import { DiffSession } from "./diff/index.js";
+import {
+  compactMobileTimelineEntriesWithState,
+  MobileLiveStreamCompactor,
+  type CompactedMobileTimelineResult,
+  type MobileTimelineEntryShape,
+} from "./session/mobile-timeline.js";
 import { type WorkspaceRuntimeStore } from "./workspace-runtime-store/index.js";
 import type { AgentMessageBehavior, AgentMessageDelivery } from "./agent/agent-messages/index.js";
 import { AgentDirectory, type BackgroundVisibility } from "./agent/directory.js";
@@ -470,6 +476,33 @@ interface WorkspaceUpdatesSubscriptionState {
   visibleEmptyProjectIds?: Set<string>;
 }
 
+function stitchMobileHistoryGroup<TRange, T extends MobileTimelineEntryShape<TRange>>(
+  entries: T[],
+  compacted: CompactedMobileTimelineResult<T>,
+  previousGroup: { groupId: string; turnId?: string } | null,
+): CompactedMobileTimelineResult<T> {
+  const tailGroup = compacted.tailGroup;
+  const sameTurn =
+    previousGroup?.turnId !== undefined &&
+    tailGroup?.turnId !== undefined &&
+    previousGroup.turnId === tailGroup.turnId;
+  if (!previousGroup || !tailGroup || !sameTurn) {
+    return { entries, tailGroup: compacted.tailGroup };
+  }
+
+  const nextEntries = entries.map((entry) =>
+    entry.item.type === "tool_call" &&
+    entry.item.name === "mobile_steps" &&
+    entry.item.callId === tailGroup.groupId
+      ? { ...entry, item: { ...entry.item, callId: previousGroup.groupId } }
+      : entry,
+  );
+  return {
+    entries: nextEntries,
+    tailGroup: { ...tailGroup, groupId: previousGroup.groupId },
+  };
+}
+
 class SessionRequestError extends Error {
   constructor(
     readonly code: string,
@@ -854,6 +887,8 @@ export class Session {
     {
       capabilities: ReadonlySet<ClientCapability>;
       appVersion: string | null;
+      inferredMobile?: boolean;
+      mobileCompactor?: MobileLiveStreamCompactor;
       activity: ClientActivity | null;
       pushToken: string | null;
     }
@@ -1433,15 +1468,20 @@ export class Session {
     capabilities: Record<string, unknown> | null,
     source?: object,
     appVersion = this.appVersion,
+    inferredMobile?: boolean,
   ): void {
     this.clientCapabilities = parseClientCapabilities(capabilities);
     if (source) {
+      const existing = this.clientSources.get(source);
       this.delivery.attach(source, capabilities?.[CLIENT_CAPS.ownedSubscriptions] === true);
       this.clientSources.set(source, {
         capabilities: this.clientCapabilities,
         appVersion,
-        activity: this.clientSources.get(source)?.activity ?? null,
-        pushToken: this.clientSources.get(source)?.pushToken ?? null,
+        inferredMobile:
+          inferredMobile !== undefined ? inferredMobile : (existing?.inferredMobile ?? false),
+        mobileCompactor: existing?.mobileCompactor,
+        activity: existing?.activity ?? null,
+        pushToken: existing?.pushToken ?? null,
       });
       this.refreshObservationProducers();
       // COMPAT(ownedSubscriptions): added in v0.8.0, remove capability-driven legacy host registration after 2027-03-09.
@@ -1556,6 +1596,105 @@ export class Session {
     return source ? this.supportsForSource(capability, source) : this.supports(capability);
   }
 
+  private isMobileSource(source?: object): boolean {
+    const meta = source ? this.clientSources.get(source) : undefined;
+    if (!meta) return false;
+    if (meta.activity?.deviceType === "web") return false;
+    if (meta.activity?.deviceType === "mobile") return true;
+    return meta.inferredMobile === true;
+  }
+
+  private getMobileCompactor(source: object): MobileLiveStreamCompactor | null {
+    if (!this.isMobileSource(source)) return null;
+    const meta = this.clientSources.get(source)!;
+    if (!meta.mobileCompactor) {
+      meta.mobileCompactor = new MobileLiveStreamCompactor();
+    }
+    return meta.mobileCompactor;
+  }
+
+  private compactStreamMessagesForSource(
+    source: object,
+    event: Extract<AgentManagerEvent, { type: "agent_stream" }>,
+    serializedEvent: Extract<SessionOutboundMessage, { type: "agent_stream" }>["payload"]["event"],
+    defaultMessage: SessionOutboundMessage,
+  ): SessionOutboundMessage[] {
+    const compactor = this.getMobileCompactor(source);
+    if (!compactor) return [defaultMessage];
+    if (serializedEvent.type === "turn_started") {
+      compactor.resetAgent(event.agentId);
+      return [defaultMessage];
+    }
+    if (
+      serializedEvent.type === "turn_completed" ||
+      serializedEvent.type === "turn_failed" ||
+      serializedEvent.type === "turn_canceled"
+    ) {
+      const settled = compactor.settleAgent(event.agentId);
+      if (!settled) return [defaultMessage];
+      return [
+        {
+          type: "agent_stream",
+          payload: this.buildAgentStreamPayload(event, {
+            type: "timeline",
+            provider: event.event.type === "turn_completed" || event.event.type === "turn_failed" || event.event.type === "turn_canceled" ? event.event.provider : "antigravity",
+            item: settled,
+          }),
+        },
+        defaultMessage,
+      ];
+    }
+    if (serializedEvent.type !== "timeline") {
+      return [defaultMessage];
+    }
+    const transformed = compactor.transformTimelineItem(
+      event.agentId,
+      serializedEvent.item,
+      event.seq,
+      serializedEvent.turnId,
+    );
+    if (transformed.action === "drop") return [];
+    const messages: SessionOutboundMessage[] = [];
+    if (transformed.settledBefore) {
+      messages.push({
+        type: "agent_stream",
+        payload: this.buildAgentStreamPayload(event, {
+          ...serializedEvent,
+          item: transformed.settledBefore,
+        }),
+      });
+    }
+    if (transformed.item === serializedEvent.item) {
+      messages.push(defaultMessage);
+    } else {
+      messages.push({
+        type: "agent_stream",
+        payload: this.buildAgentStreamPayload(event, {
+          ...serializedEvent,
+          item: transformed.item,
+        }),
+      });
+    }
+    return messages;
+  }
+
+  private emitCompactedStreamMessages(
+    source: object,
+    event: Extract<AgentManagerEvent, { type: "agent_stream" }>,
+    serializedEvent: Extract<SessionOutboundMessage, { type: "agent_stream" }>["payload"]["event"],
+    message: SessionOutboundMessage,
+    emit: (outbound: SessionOutboundMessage) => void,
+  ): void {
+    for (const outbound of this.compactStreamMessagesForSource(
+      source,
+      event,
+      serializedEvent,
+      message,
+    )) {
+      emit(outbound);
+    }
+  }
+
   private forwardAgentStream(
     event: Extract<AgentManagerEvent, { type: "agent_stream" }>,
     serializedEvent: Extract<SessionOutboundMessage, { type: "agent_stream" }>["payload"]["event"],
@@ -1591,7 +1730,13 @@ export class Session {
         !this.supportsTimelineItem(serializedEvent.item, source)
       )
         continue;
-      subscription.owner.emit(message);
+      this.emitCompactedStreamMessages(
+        source,
+        event,
+        serializedEvent,
+        message,
+        (outbound) => subscription.owner.emit(outbound),
+      );
     }
     // COMPAT(ownedSubscriptions): added in v0.8.0, remove implicit timeline delivery after 2027-03-09.
     for (const [source, { capabilities }] of this.clientSources) {
@@ -1606,7 +1751,15 @@ export class Session {
         (subscription) =>
           subscription.owner.source === source && subscription.agentIds.has(event.agentId),
       );
-      if (!alreadyDelivered) this.onMessageToSource?.(source, message);
+      if (!alreadyDelivered) {
+        this.emitCompactedStreamMessages(
+          source,
+          event,
+          serializedEvent,
+          message,
+          (outbound) => this.onMessageToSource?.(source, outbound),
+        );
+      }
     }
     if (
       this.clientSources.size === 0 &&
@@ -8646,9 +8799,28 @@ export class Session {
         selectedTimeline.endSeq !== null
           ? { epoch: selectedTimeline.timeline.epoch, seq: selectedTimeline.endSeq }
           : null;
-      const entries = selectedTimeline.entries.filter((entry) =>
+      const supportedEntries = selectedTimeline.entries.filter((entry) =>
         this.supportsTimelineItem(entry.item, source),
       );
+      const isMobile = this.isMobileSource(source);
+      let entries = supportedEntries;
+      if (isMobile) {
+        const mobileCompactor = source ? this.getMobileCompactor(source) : null;
+        const previousGroup =
+          direction === "tail" || direction === "after"
+            ? mobileCompactor?.activeGroup(msg.agentId)
+            : null;
+        const compacted = compactMobileTimelineEntriesWithState(supportedEntries);
+        const stitched = stitchMobileHistoryGroup(
+          compacted.entries,
+          compacted,
+          previousGroup ?? null,
+        );
+        entries = stitched.entries;
+        if (source && (direction === "tail" || direction === "after")) {
+          mobileCompactor?.seedTailGroup(msg.agentId, stitched.tailGroup);
+        }
+      }
 
       this.emitForSource(
         {

@@ -1198,7 +1198,13 @@ export function mergeAgentToolCallItem(
   timestamp: Date,
   timelineCursor?: TimelinePosition,
 ): AgentToolCallItem {
-  const mergedStatus = mergeAgentToolCallStatus(existing.payload.data.status, data.status);
+  const mobileSummaryUpdate =
+    existing.payload.data.name === "mobile_steps" &&
+    data.name === "mobile_steps" &&
+    data.status === "running";
+  const mergedStatus = mobileSummaryUpdate
+    ? "running"
+    : mergeAgentToolCallStatus(existing.payload.data.status, data.status);
   const mergedError =
     mergedStatus === "failed"
       ? (data.error ?? existing.payload.data.error ?? { message: "Tool call failed" })
@@ -1224,6 +1230,58 @@ export function mergeAgentToolCallItem(
   };
 }
 
+function mobileStepCount(label: string | undefined): number {
+  const match = label?.match(/^(\d+)\s+steps?/i);
+  return match ? Number(match[1]) : 0;
+}
+
+function mergeAdjacentMobileStepCalls(
+  existing: AgentToolCallItem,
+  incoming: AgentToolCallData,
+  timestamp: Date,
+  timelineCursor: TimelinePosition | undefined,
+  turnId: string | undefined,
+): AgentToolCallItem {
+  const previousDetail = existing.payload.data.detail;
+  const nextDetail = incoming.detail;
+  if (previousDetail.type !== "plain_text" || nextDetail.type !== "plain_text") {
+    return {
+      ...existing,
+      ...(turnId ? { turnId } : {}),
+      ...(timelineCursor ? { timelineCursor } : {}),
+      timestamp,
+      payload: { source: "agent", data: incoming },
+    };
+  }
+
+  const previousLines = previousDetail.text?.split("\n").filter(Boolean) ?? [];
+  const nextLines = nextDetail.text?.split("\n").filter(Boolean) ?? [];
+  const lines = [...new Set([...previousLines, ...nextLines])].slice(-40);
+  const count = mobileStepCount(previousDetail.label) + mobileStepCount(nextDetail.label);
+  const status: AgentToolCallStatus =
+    existing.payload.data.status === "running" || incoming.status === "running"
+      ? "running"
+      : incoming.status;
+  const data: AgentToolCallData = {
+    ...incoming,
+    callId: existing.payload.data.callId,
+    status,
+    error: status === "failed" ? incoming.error : null,
+    detail: {
+      ...nextDetail,
+      label: `${count || 1} ${count === 1 ? "step" : "steps"}`,
+      ...(lines.length > 0 ? { text: lines.join("\n") } : {}),
+    },
+  };
+  return {
+    ...existing,
+    ...(turnId ? { turnId } : {}),
+    ...(timelineCursor ? { timelineCursor } : {}),
+    timestamp,
+    payload: { source: "agent", data },
+  };
+}
+
 interface AppendAgentToolCallInput {
   state: StreamItem[];
   data: AgentToolCallData;
@@ -1236,6 +1294,55 @@ function appendAgentToolCall(input: AppendAgentToolCallInput): StreamItem[] {
   const { state, data, timestamp, turnId, timelineCursor } = input;
   const identity = agentToolCallIdentity({ callId: data.callId, turnId });
   const existingIndex = findExistingTimelineIdentityIndex(state, identity);
+
+  // A paginated mobile history window or an interstitial assistant message can
+  // split one compact process group into different call ids. Merge summaries
+  // within the same turn before appending so one activity block stays one card.
+  if (data.name === "mobile_steps" && existingIndex < 0) {
+    if (turnId) {
+      const sameTurnIndexes = state.flatMap((entry, index) =>
+        isAgentToolCallItem(entry) &&
+        entry.payload.data.name === "mobile_steps" &&
+        entry.turnId === turnId
+          ? [index]
+          : [],
+      );
+      if (sameTurnIndexes.length > 0) {
+        const firstIndex = sameTurnIndexes[0]!;
+        let merged = state[firstIndex] as AgentToolCallItem;
+        for (const index of sameTurnIndexes.slice(1)) {
+          const candidate = state[index] as AgentToolCallItem;
+          merged = mergeAdjacentMobileStepCalls(
+            merged,
+            candidate.payload.data,
+            candidate.timestamp,
+            candidate.timelineCursor,
+            candidate.turnId,
+          );
+        }
+        merged = mergeAdjacentMobileStepCalls(merged, data, timestamp, timelineCursor, turnId);
+        const duplicateIndexes = new Set(sameTurnIndexes.slice(1));
+        return state
+          .map((entry, index) => (index === firstIndex ? merged : entry))
+          .filter((_, index) => !duplicateIndexes.has(index));
+      }
+    }
+    const previous = state[state.length - 1];
+    if (
+      previous &&
+      isAgentToolCallItem(previous) &&
+      previous.payload.data.name === "mobile_steps"
+    ) {
+      const merged = mergeAdjacentMobileStepCalls(
+        previous,
+        data,
+        timestamp,
+        timelineCursor,
+        turnId,
+      );
+      return [...state.slice(0, -1), merged];
+    }
+  }
 
   if (existingIndex >= 0) {
     const existing = state[existingIndex];

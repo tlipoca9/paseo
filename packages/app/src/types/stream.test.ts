@@ -2406,3 +2406,90 @@ it("retains agent-message provenance through live delivery and repeated history"
   expect(replay).toHaveLength(1);
   expect(replay[0]).toMatchObject({ payload: { data: { agentMessage } } });
 });
+
+it("merges adjacent mobile process summaries into one card", () => {
+  const summary = (callId: string, label: string, text: string) =>
+    ({
+      type: "timeline" as const,
+      provider: "codex" as const,
+      item: {
+        type: "tool_call" as const,
+        callId,
+        name: "mobile_steps",
+        status: "completed" as const,
+        error: null,
+        detail: { type: "plain_text" as const, label, text },
+      },
+    }) satisfies AgentStreamEventPayload;
+
+  const first = reduceStreamUpdate(
+    [],
+    summary("mobile-group:1", "2 steps", "• Read a.ts\n• Edit b.ts"),
+    new Date(1),
+  );
+  const merged = reduceStreamUpdate(
+    first,
+    summary("mobile-group:3", "1 step", "• Run tests"),
+    new Date(2),
+  );
+
+  expect(merged).toHaveLength(1);
+  expect(merged[0]).toMatchObject({
+    payload: {
+      data: {
+        name: "mobile_steps",
+        callId: "mobile-group:1",
+        detail: { label: "3 steps", text: "• Read a.ts\n• Edit b.ts\n• Run tests" },
+      },
+    },
+  });
+});
+
+it("merges mobile summaries separated by assistant narration in one turn", () => {
+  const summary = (callId: string, text: string) =>
+    ({
+      type: "timeline" as const,
+      provider: "codex" as const,
+      turnId: "turn-1",
+      item: {
+        type: "tool_call" as const,
+        callId,
+        name: "mobile_steps",
+        status: "running" as const,
+        error: null,
+        detail: { type: "plain_text" as const, label: "1 step", text },
+      },
+    }) satisfies AgentStreamEventPayload;
+
+  let state = reduceStreamUpdate(
+    [],
+    summary("mobile-group:1", "• $ npm test (running)"),
+    new Date(1),
+  );
+  state = reduceStreamUpdate(
+    state,
+    {
+      type: "timeline",
+      provider: "codex",
+      turnId: "turn-1",
+      item: { type: "assistant_message", text: "I will edit the config next." },
+    },
+    new Date(2),
+  );
+  state = reduceStreamUpdate(
+    state,
+    summary("mobile-group:3", "• Edit config.ts (running)"),
+    new Date(3),
+  );
+
+  expect(state.filter((item) => item.kind === "tool_call")).toHaveLength(1);
+  expect(state).toHaveLength(2);
+  expect(state[0]).toMatchObject({
+    payload: {
+      data: {
+        callId: "mobile-group:1",
+        detail: { label: "2 steps" },
+      },
+    },
+  });
+});
