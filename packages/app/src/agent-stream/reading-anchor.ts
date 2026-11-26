@@ -11,6 +11,10 @@ const edgeOf = (row: RowGeometry, edge: DisclosureTriggerEdge) =>
 
 // A row must clear the reading line before the next row takes ownership.
 const READING_POSITION_OFFSET_PX = 8;
+// When fast-scrolling above the currently mounted virtualized slice, the
+// topmost mounted row can sit thousands of pixels below scrollTop. Refuse to
+// hijack the reading anchor onto an off-screen row far below the viewport.
+const MAX_OFFSCREEN_ANCHOR_GAP_PX = 1200;
 export interface ReadingRowReplacements {
   get(id: string): string | undefined;
 }
@@ -57,6 +61,10 @@ export function createReadingAnchor() {
     },
     scroll(scrollTop: number) {
       const next = readingRow(scrollTop);
+      if (next && next.top > scrollTop + MAX_OFFSCREEN_ANCHOR_GAP_PX) {
+        anchor = null;
+        return;
+      }
       anchor = next ? anchorTop(next) : null;
     },
     reconcile(

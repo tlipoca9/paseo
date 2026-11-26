@@ -166,4 +166,24 @@ describe("reading anchor", () => {
       ),
     ).toBe(0);
   });
+
+  it("does not hijack the anchor onto a far-below mounted row during fast upward scroll", () => {
+    const anchor = createReadingAnchor();
+    const farBelowRows = [
+      { id: "r180", top: 20000, height: 200 },
+      { id: "r181", top: 20200, height: 200 },
+    ];
+    anchor.reconcile(20050, farBelowRows);
+    expect(anchor.getRowId()).toBe("r180");
+
+    anchor.scroll(15000);
+    expect(anchor.getRowId()).toBeNull();
+    expect(
+      anchor.reconcile(15000, [
+        { id: "r120", top: 14900, height: 200 },
+        { id: "r180", top: 17000, height: 200 },
+      ]),
+    ).toBe(15000);
+    expect(anchor.getRowId()).toBe("r120");
+  });
 });

@@ -1,8 +1,12 @@
 import type { PluginTheme } from "@getpaseo/plugin";
 import type { Theme } from "@/styles/theme";
 
+const pluginThemeCache = new WeakMap<Theme, PluginTheme>();
+
 export function toPluginTheme(theme: Theme): PluginTheme {
-  return {
+  const cached = pluginThemeCache.get(theme);
+  if (cached) return cached;
+  const converted: PluginTheme = {
     colors: {
       surface0: theme.colors.surface0,
       surface1: theme.colors.surface1,
@@ -17,4 +21,6 @@ export function toPluginTheme(theme: Theme): PluginTheme {
       statusDanger: theme.colors.statusDanger,
     },
   };
+  pluginThemeCache.set(theme, converted);
+  return converted;
 }

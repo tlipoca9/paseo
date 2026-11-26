@@ -1,6 +1,6 @@
 import type { PluginTimelineItemProps } from "@getpaseo/plugin/client";
 import type { PluginTheme } from "@getpaseo/plugin";
-import React, { type ComponentType, useMemo } from "react";
+import React, { memo, type ComponentType, useMemo } from "react";
 import { Text } from "react-native";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import { useIsCompactFormFactor } from "@/constants/layout";
@@ -35,7 +35,7 @@ function parseRendererData(
   }
 }
 
-function PluginTimelineItemBody({
+const PluginTimelineItemBody = memo(function PluginTimelineItemBody({
   agentId,
   item,
   serverId,
@@ -47,18 +47,34 @@ function PluginTimelineItemBody({
   theme: PluginTheme;
 }) {
   const plugin = useInstalledPlugin(serverId, item.pluginId);
-  const renderer = plugin?.timelineRenderers.find(
-    (candidate) => candidate.kind === item.itemKind && candidate.version === item.version,
+  const renderer = useMemo(
+    () =>
+      plugin?.timelineRenderers.find(
+        (candidate) => candidate.kind === item.itemKind && candidate.version === item.version,
+      ),
+    [plugin, item.itemKind, item.version],
   );
-  const parsed = parseRendererData(renderer, item.data);
+  const parsed = useMemo(() => parseRendererData(renderer, item.data), [renderer, item.data]);
   const client = useHostRuntimeClient(serverId);
   const compact = useIsCompactFormFactor();
   const hosts = useHosts();
   const hostLabel = hosts.find((host) => host.serverId === serverId)?.label ?? serverId;
   const host = useMemo(() => ({ id: serverId, label: hostLabel }), [hostLabel, serverId]);
   const layout = useMemo(() => ({ compact, platform: resolvePluginPlatform() }), [compact]);
+  const pluginItem = useMemo(
+    () =>
+      parsed
+        ? {
+            type: "plugin" as const,
+            kind: item.itemKind,
+            version: item.version,
+            data: parsed.data,
+          }
+        : null,
+    [item.itemKind, item.version, parsed],
+  );
 
-  if (!plugin || !renderer || !parsed || !client) {
+  if (!plugin || !renderer || !pluginItem || !client) {
     return <TimelineItemUnavailable />;
   }
 
@@ -69,12 +85,7 @@ function PluginTimelineItemBody({
     host,
     layout,
     timestamp: item.timestamp,
-    item: {
-      type: "plugin",
-      kind: item.itemKind,
-      version: item.version,
-      data: parsed.data,
-    },
+    item: pluginItem,
   };
   return (
     <SurfaceErrorBoundary installation={plugin} resetKey={item.data} Surface={Component}>
@@ -83,17 +94,17 @@ function PluginTimelineItemBody({
       </PluginInstallationProvider>
     </SurfaceErrorBoundary>
   );
-}
+});
 
 const ThemedPluginTimelineItemBody = withUnistyles(PluginTimelineItemBody);
 
-export function PluginTimelineItemView(props: {
+export const PluginTimelineItemView = memo(function PluginTimelineItemView(props: {
   agentId: string;
   item: PluginTimelineStreamItem;
   serverId: string;
 }) {
   return <ThemedPluginTimelineItemBody {...props} uniProps={pluginThemeMapping} />;
-}
+});
 
 const styles = StyleSheet.create((theme) => ({
   unavailable: {

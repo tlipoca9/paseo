@@ -309,4 +309,38 @@ describe("web history start", () => {
 
     expect(olderHistoryLoads).toBe(1);
   });
+
+  it("scrolls rapidly up through long virtualized history without blanking or ResizeObserver loop errors", async () => {
+    const roErrors: string[] = [];
+    const onError = (event: ErrorEvent) => {
+      if (String(event.message || "").includes("ResizeObserver")) {
+        roErrors.push(String(event.message));
+      }
+    };
+    window.addEventListener("error", onError);
+    try {
+      const history = Array.from({ length: 200 }, (_, index) => row(index, 60));
+      const timeline = mountTimeline(history.slice(180), { isMobileBreakpoint: false });
+      timeline.render({
+        historyVirtualized: history.slice(0, 180),
+        historyMounted: history.slice(180),
+      });
+      await timeline.settle();
+      expect(timeline.distanceFromEnd()).toBeLessThanOrEqual(1);
+
+      // Simulate fast trackpad/scrollbar jump far upward into virtualized history.
+      timeline.wheelUpTo(2400);
+      await timeline.settle();
+      timeline.wheelUpTo(40);
+      await timeline.settle();
+
+      expect(timeline.scrollTop()).toBeLessThanOrEqual(120);
+      const renderedRows = host.querySelectorAll("[data-history-row-id]");
+      expect(renderedRows.length).toBeGreaterThan(0);
+      expect(host.querySelector('[data-history-row-id="message-0"]')).not.toBeNull();
+      expect(roErrors).toEqual([]);
+    } finally {
+      window.removeEventListener("error", onError);
+    }
+  });
 });

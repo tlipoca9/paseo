@@ -1,7 +1,11 @@
 import { isTurnBoundary } from "./turn-membership";
 import type { ChatDisplay } from "@/hooks/use-settings";
 import type { TimelineItemTransform } from "@/plugins/timeline/model";
-import { projectPluginTimelineItems } from "@/plugins/timeline/projection";
+import {
+  groupAdjacentPluginItems,
+  mergeGroupedPluginTailAndHead,
+  projectPluginTimelineItems,
+} from "@/plugins/timeline/projection";
 import {
   prepareToolCallHistory,
   projectToolCallDetailLevel,
@@ -75,6 +79,7 @@ export function createStreamPresentation() {
   let historySource: StreamItem[] | undefined;
   let historyTransform: TimelineItemTransform | undefined;
   let historyRows: StreamItem[] = [];
+  let historyPluginGroupHosts: ReadonlyMap<string, string> = new Map();
   let preparedTail: StreamItem[] | undefined;
   let preparedAutoExpandReasoning: boolean | undefined;
   let preparedLevel: ToolCallDetailLevel | undefined;
@@ -163,33 +168,45 @@ export function createStreamPresentation() {
     const level: ToolCallDetailLevel = input.display === "full" ? "detailed" : "overview";
     // Retained history is not reprojected or regrouped on each live text update.
     if (historySource !== input.tail || historyTransform !== input.transform) {
-      historyRows = projectPluginTimelineItems(input.tail, input.transform).flatMap<StreamItem>(
-        (item) => presentRows(item),
-      );
+      const projectedHistory = projectPluginTimelineItems(
+        input.tail,
+        input.transform,
+      ).flatMap<StreamItem>((item) => presentRows(item));
+      const groupedHistory = groupAdjacentPluginItems(projectedHistory, {
+        trailingIsLiveTail: true,
+      });
+      historyRows = groupedHistory.items;
+      historyPluginGroupHosts = groupedHistory.hostIdByMemberId;
       historySource = input.tail;
       historyTransform = input.transform;
     }
-    const head: StreamItem[] = [];
+    const rawHead: StreamItem[] = [];
     for (const item of projectPluginTimelineItems(input.head, input.transform, "streaming")) {
       const blocks = presentRows(item);
-      head.push(...blocks);
+      rawHead.push(...blocks);
     }
+    const mergedPluginGroups = mergeGroupedPluginTailAndHead({
+      tail: historyRows,
+      head: rawHead,
+    });
+    const effectiveTail = mergedPluginGroups.tail;
+    const head = mergedPluginGroups.head;
     if (
-      preparedTail !== historyRows ||
+      preparedTail !== effectiveTail ||
       preparedLevel !== level ||
       preparedAutoExpandReasoning !== input.autoExpandReasoning
     ) {
-      preparedHistory = prepareToolCallHistory(level, historyRows, input.autoExpandReasoning);
+      preparedHistory = prepareToolCallHistory(level, effectiveTail, input.autoExpandReasoning);
       historyGroupHosts = preparedHistory
         ? groupedRowHosts(preparedHistory.grouped.tail, preparedHistory.grouped.groupsByHostId)
         : new Map();
-      preparedTail = historyRows;
+      preparedTail = effectiveTail;
       preparedLevel = level;
       preparedAutoExpandReasoning = input.autoExpandReasoning;
     }
     const projection = projectToolCallDetailLevel({
       level,
-      tail: historyRows,
+      tail: effectiveTail,
       head,
       preparedHistory,
       isTurnActive: input.isTurnActive,
@@ -203,12 +220,19 @@ export function createStreamPresentation() {
       projection.groupsByHostId,
     );
     const retainedGroupHosts = historyGroupHosts;
+    const livePluginGroupHosts = mergedPluginGroups.hostIdByMemberId;
+    const retainedPluginGroupHosts = historyPluginGroupHosts;
     return {
       ...result,
       readingRowReplacements: {
         get(id) {
           if (result.turns.nestedItemIds.has(id)) return undefined;
-          const groupHost = liveGroupHosts.get(id) ?? retainedGroupHosts.get(id) ?? id;
+          const pluginGroupHost =
+            livePluginGroupHosts.get(id) ?? retainedPluginGroupHosts.get(id) ?? id;
+          const groupHost =
+            liveGroupHosts.get(pluginGroupHost) ??
+            retainedGroupHosts.get(pluginGroupHost) ??
+            pluginGroupHost;
           return (
             result.turns.hostIdByHiddenRowId.get(id) ??
             result.turns.hostIdByHiddenRowId.get(groupHost) ??

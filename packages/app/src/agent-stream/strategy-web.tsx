@@ -570,15 +570,36 @@ function WebStreamViewport(props: StreamRenderInput & { isMobileBreakpoint: bool
 
   // Measure the committed DOM rather than queued observer entries: flushSync can
   // also commit an image's pending intrinsic dimensions, invalidating those entries.
+  // Guard re-entrant ResizeObserver delivery so cascading layout updates defer to
+  // the next frame instead of tripping Chromium's ResizeObserver loop abort.
+  const isFlushingResizeRef = useRef(false);
+  const pendingRowResizeFrameRef = useRef<number | null>(null);
+  const flushVirtualizedRowResize = useStableEvent(() => {
+    if (!isActiveRef.current) return;
+    if (isFlushingResizeRef.current) {
+      if (pendingRowResizeFrameRef.current === null) {
+        pendingRowResizeFrameRef.current = window.requestAnimationFrame(() => {
+          pendingRowResizeFrameRef.current = null;
+          flushVirtualizedRowResize();
+        });
+      }
+      return;
+    }
+    isFlushingResizeRef.current = true;
+    try {
+      flushSync(() => {
+        measureVirtualizedRows();
+      });
+    } finally {
+      isFlushingResizeRef.current = false;
+    }
+  });
   const virtualRowObserver = useMemo(
     () =>
       new ResizeObserver(() => {
-        if (!isActiveRef.current) return;
-        flushSync(() => {
-          measureVirtualizedRows();
-        });
+        flushVirtualizedRowResize();
       }),
-    [measureVirtualizedRows],
+    [flushVirtualizedRowResize],
   );
   const measureVirtualizedRowElement = useCallback(
     (node: HTMLDivElement | null) => {
@@ -588,7 +609,16 @@ function WebStreamViewport(props: StreamRenderInput & { isMobileBreakpoint: bool
     },
     [virtualRowObserver],
   );
-  useEffect(() => () => virtualRowObserver.disconnect(), [virtualRowObserver]);
+  useEffect(
+    () => () => {
+      if (pendingRowResizeFrameRef.current !== null) {
+        window.cancelAnimationFrame(pendingRowResizeFrameRef.current);
+        pendingRowResizeFrameRef.current = null;
+      }
+      virtualRowObserver.disconnect();
+    },
+    [virtualRowObserver],
+  );
 
   const cancelPendingStickToBottom = useCallback(() => {
     const pendingFrame = pendingAutoScrollFrameRef.current;
@@ -995,9 +1025,7 @@ function WebStreamViewport(props: StreamRenderInput & { isMobileBreakpoint: bool
       evaluateHistoryStart();
     }
     const observer = new ResizeObserver(() => {
-      flushSync(() => {
-        measureVirtualizedRows();
-      });
+      flushVirtualizedRowResize();
       const nextGeometry = getObservedViewportGeometry(scrollContainer);
       if (pendingResumeGeometryCheckRef.current) {
         pendingResumeGeometryCheckRef.current = false;

@@ -1,7 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
 import type { StreamItem } from "@/types/stream";
 import type { TimelineItemTransform } from "./model";
-import { projectPluginTimelineItems } from "./projection";
+import {
+  groupAdjacentPluginItems,
+  mergeGroupedPluginTailAndHead,
+  projectPluginTimelineItems,
+} from "./projection";
 
 function thought(text: string, status: "loading" | "ready" = "loading"): StreamItem {
   return {
@@ -191,5 +195,117 @@ describe("plugin timeline projection", () => {
       "split/thought-1/right",
     ]);
     expect(filtered).toEqual([]);
+  });
+
+  it("groups consecutive plugin items declaring matching __paseoGroup descriptors", () => {
+    const t1 = new Date("2026-01-01T00:00:01.000Z");
+    const t2 = new Date("2026-01-01T00:00:02.000Z");
+    const t3 = new Date("2026-01-01T00:00:03.000Z");
+    const makeTool = (id: string, name: string, timestamp: Date): StreamItem => ({
+      kind: "plugin",
+      id: `beautiful-chat/${id}/0`,
+      sourceId: id,
+      sourceKind: "tool_call",
+      timestamp,
+      pluginId: "beautiful-chat",
+      pluginItemId: `${id}/0`,
+      itemKind: "omp-tool-call",
+      version: 1,
+      data: {
+        name,
+        status: "completed",
+        __paseoGroup: { kind: "omp-activity-group", version: 1, key: "activity" },
+      },
+    });
+    const userMsg: StreamItem = {
+      kind: "user_message",
+      id: "u1",
+      text: "hello",
+      timestamp: t2,
+    };
+
+    const grouped = groupAdjacentPluginItems([
+      makeTool("tool-1", "read_file", t1),
+      makeTool("tool-2", "run_command", t2),
+      userMsg,
+      makeTool("tool-3", "edit_file", t3),
+    ]);
+
+    expect(grouped.items).toHaveLength(3);
+    expect(grouped.items[0]).toMatchObject({
+      kind: "plugin",
+      id: "beautiful-chat/group:tool-1",
+      sourceId: "tool-1",
+      itemKind: "omp-activity-group",
+      data: {
+        groupKey: "activity",
+        isTail: false,
+        entries: [
+          { sourceId: "tool-1", kind: "omp-tool-call", data: { name: "read_file", status: "completed" } },
+          { sourceId: "tool-2", kind: "omp-tool-call", data: { name: "run_command", status: "completed" } },
+        ],
+      },
+    });
+    expect(grouped.items[1]).toBe(userMsg);
+    expect(grouped.items[2]).toMatchObject({
+      id: "beautiful-chat/group:tool-3",
+      data: { isTail: true },
+    });
+    expect(grouped.hostIdByMemberId.get("tool-2")).toBe("beautiful-chat/group:tool-1");
+  });
+
+  it("merges streaming head items into a matching trailing grouped tail item", () => {
+    const t1 = new Date("2026-01-01T00:00:01.000Z");
+    const t2 = new Date("2026-01-01T00:00:02.000Z");
+    const tail = groupAdjacentPluginItems([
+      {
+        kind: "plugin",
+        id: "beautiful-chat/tool-1/0",
+        sourceId: "tool-1",
+        sourceKind: "tool_call",
+        timestamp: t1,
+        pluginId: "beautiful-chat",
+        pluginItemId: "tool-1/0",
+        itemKind: "omp-tool-call",
+        version: 1,
+        data: {
+          name: "read_file",
+          status: "completed",
+          __paseoGroup: { kind: "omp-activity-group", version: 1, key: "activity" },
+        },
+      },
+    ]).items;
+    const head: StreamItem[] = [
+      {
+        kind: "plugin",
+        id: "beautiful-chat/tool-2/0",
+        sourceId: "tool-2",
+        sourceKind: "tool_call",
+        timestamp: t2,
+        pluginId: "beautiful-chat",
+        pluginItemId: "tool-2/0",
+        itemKind: "omp-tool-call",
+        version: 1,
+        data: {
+          name: "run_command",
+          status: "running",
+          __paseoGroup: { kind: "omp-activity-group", version: 1, key: "activity" },
+        },
+      },
+    ];
+
+    const merged = mergeGroupedPluginTailAndHead({ tail, head });
+    expect(merged.head).toHaveLength(0);
+    expect(merged.tail).toHaveLength(1);
+    expect(merged.tail[0]).toMatchObject({
+      id: "beautiful-chat/group:tool-1",
+      data: {
+        isTail: true,
+        entries: [
+          { sourceId: "tool-1", data: { name: "read_file" } },
+          { sourceId: "tool-2", data: { name: "run_command", status: "running" } },
+        ],
+      },
+    });
   });
 });
