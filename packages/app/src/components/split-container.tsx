@@ -85,6 +85,7 @@ interface SplitContainerProps {
   onCloseTab: (tabId: string) => Promise<void> | void;
   onCopyResumeCommand: (agentId: string) => Promise<void> | void;
   onCopyAgentId: (agentId: string) => Promise<void> | void;
+  onCopySessionReference?: (agentId: string) => Promise<void> | void;
   onCopyTerminalId: (terminalId: string) => Promise<void> | void;
   onCopyFilePath: (path: string) => Promise<void> | void;
   onReloadAgent: (agentId: string) => Promise<void> | void;
@@ -174,6 +175,7 @@ export function SplitContainer({
   onCloseTab,
   onCopyResumeCommand,
   onCopyAgentId,
+  onCopySessionReference,
   onCopyTerminalId,
   onCopyFilePath,
   onReloadAgent,
@@ -288,6 +290,7 @@ export function SplitContainer({
                 onCloseTab={onCloseTab}
                 onCopyResumeCommand={onCopyResumeCommand}
                 onCopyAgentId={onCopyAgentId}
+                onCopySessionReference={onCopySessionReference}
                 onCopyTerminalId={onCopyTerminalId}
                 onCopyFilePath={onCopyFilePath}
                 onReloadAgent={onReloadAgent}
@@ -426,6 +429,7 @@ function SplitNodeView({
   onCloseTab,
   onCopyResumeCommand,
   onCopyAgentId,
+  onCopySessionReference,
   onCopyTerminalId,
   onCopyFilePath,
   onReloadAgent,
@@ -521,6 +525,7 @@ function SplitNodeView({
             onCloseTab={onCloseTab}
             onCopyResumeCommand={onCopyResumeCommand}
             onCopyAgentId={onCopyAgentId}
+            onCopySessionReference={onCopySessionReference}
             onCopyTerminalId={onCopyTerminalId}
             onCopyFilePath={onCopyFilePath}
             onReloadAgent={onReloadAgent}
@@ -576,6 +581,7 @@ function SplitNodeView({
               onCloseTab={onCloseTab}
               onCopyResumeCommand={onCopyResumeCommand}
               onCopyAgentId={onCopyAgentId}
+              onCopySessionReference={onCopySessionReference}
               onCopyTerminalId={onCopyTerminalId}
               onCopyFilePath={onCopyFilePath}
               onReloadAgent={onReloadAgent}
@@ -650,6 +656,7 @@ const SplitPaneView = memo(function SplitPaneView({
   onCloseTab,
   onCopyResumeCommand,
   onCopyAgentId,
+  onCopySessionReference,
   onCopyTerminalId,
   onCopyFilePath,
   onReloadAgent,
@@ -848,6 +855,7 @@ const SplitPaneView = memo(function SplitPaneView({
                 onCloseTab={onCloseTab}
                 onCopyResumeCommand={onCopyResumeCommand}
                 onCopyAgentId={onCopyAgentId}
+                onCopySessionReference={onCopySessionReference}
                 onCopyTerminalId={onCopyTerminalId}
                 onCopyFilePath={onCopyFilePath}
                 onReloadAgent={onReloadAgent}

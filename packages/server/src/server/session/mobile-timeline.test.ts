@@ -152,7 +152,7 @@ describe("MobileLiveStreamCompactor", () => {
       }
     }
 
-    // Assistant reply resets the active group.
+    // Assistant reply settles the completed group (from forceRunning -> completed) and closes it.
     const reply = compactor.transformTimelineItem(
       "agent-1",
       { type: "assistant_message", text: "All tests passed." },
@@ -161,10 +161,16 @@ describe("MobileLiveStreamCompactor", () => {
     expect(reply.action).toBe("emit");
     if (reply.action === "emit") {
       expect(reply.item.type).toBe("assistant_message");
+      expect(reply.settledBefore).toBeDefined();
+      expect(reply.settledBefore?.status).toBe("completed");
+      if (first.action === "emit" && first.item.type === "tool_call") {
+        expect(reply.settledBefore?.callId).toBe(first.item.callId);
+      }
     }
+    expect(compactor.activeGroup("agent-1")).toBeNull();
   });
 
-  it("seeds from history tail so live updates reuse the same callId", () => {
+  it("seeds from history tail so live updates reuse the same callId, then cuts off on assistant reply", () => {
     const history = compactMobileTimelineEntriesWithState([
       makeEntry(1, { type: "user_message", text: "Run checks" }),
       makeEntry(2, {
@@ -199,7 +205,7 @@ describe("MobileLiveStreamCompactor", () => {
       expect(nextLive.item.status).toBe("running");
     }
 
-    // Assistant narration passes through while the same turn remains active.
+    // Assistant reply closes the active group while preserving genuinely running steps.
     const reply = compactor.transformTimelineItem(
       "agent-1",
       { type: "assistant_message", text: "Done." },
@@ -210,9 +216,10 @@ describe("MobileLiveStreamCompactor", () => {
       expect(reply.settledBefore).toBeUndefined();
       expect(reply.item.type).toBe("assistant_message");
     }
+    expect(compactor.activeGroup("agent-1")).toBeNull();
   });
 
-  it("keeps one history group across assistant narration in the same turn", () => {
+  it("splits history groups at non-empty assistant messages to preserve chronological order", () => {
     const compacted = compactMobileTimelineEntriesWithState([
       makeEntry(1, { type: "user_message", text: "Update the files" }),
       makeEntry(2, {
@@ -223,7 +230,7 @@ describe("MobileLiveStreamCompactor", () => {
         error: null,
         detail: { type: "shell", command: "npm test", exitCode: 0 },
       }),
-      makeEntry(3, { type: "assistant_message", text: "I will edit the config next." }),
+      makeEntry(3, { type: "assistant_message", text: "Phase 1 complete." }),
       makeEntry(4, {
         type: "tool_call",
         callId: "edit-1",
@@ -232,54 +239,201 @@ describe("MobileLiveStreamCompactor", () => {
         error: null,
         detail: { type: "edit", filePath: "/repo/config.ts", unifiedDiff: "-old\n+new" },
       }),
+      makeEntry(5, { type: "assistant_message", text: "Phase 2 complete." }),
+      makeEntry(6, {
+        type: "tool_call",
+        callId: "read-1",
+        name: "read",
+        status: "completed",
+        error: null,
+        detail: { type: "read", filePath: "/repo/readme.md" },
+      }),
+    ]);
+
+    expect(compacted.entries).toHaveLength(6);
+    expect(compacted.entries.map((entry) => entry.item.type)).toEqual([
+      "user_message",
+      "tool_call",
+      "assistant_message",
+      "tool_call",
+      "assistant_message",
+      "tool_call",
+    ]);
+
+    const firstSummary = compacted.entries[1]!.item;
+    const secondSummary = compacted.entries[3]!.item;
+    const thirdSummary = compacted.entries[5]!.item;
+    if (
+      firstSummary.type === "tool_call" &&
+      secondSummary.type === "tool_call" &&
+      thirdSummary.type === "tool_call"
+    ) {
+      expect(firstSummary.callId).toBe("mobile-group:2");
+      expect(secondSummary.callId).toBe("mobile-group:4");
+      expect(thirdSummary.callId).toBe("mobile-group:6");
+      expect(firstSummary.detail.type === "plain_text" ? firstSummary.detail.text : "").toContain(
+        "$ npm test",
+      );
+      expect(firstSummary.detail.type === "plain_text" ? firstSummary.detail.text : "").not.toContain(
+        "Edit config.ts",
+      );
+      expect(secondSummary.detail.type === "plain_text" ? secondSummary.detail.text : "").toContain(
+        "Edit config.ts",
+      );
+      expect(thirdSummary.detail.type === "plain_text" ? thirdSummary.detail.text : "").toContain(
+        "Read readme.md",
+      );
+    }
+    expect(compacted.tailGroup?.groupId).toBe("mobile-group:6");
+
+    // When a page ends on a non-empty assistant_message, tailGroup is null so subsequent live tools open a new group.
+    const endedOnReply = compactMobileTimelineEntriesWithState(compacted.entries.slice(0, 5));
+    expect(endedOnReply.tailGroup).toBeNull();
+  });
+
+  it("preserves running status on a long-running tool call followed by an assistant message in history", () => {
+    const compacted = compactMobileTimelineEntriesWithState([
+      makeEntry(1, { type: "user_message", text: "Start backfill" }),
+      makeEntry(2, {
+        type: "tool_call",
+        callId: "bg-shell-1",
+        name: "shell",
+        status: "running",
+        error: null,
+        detail: { type: "shell", command: "python backfill.py" },
+      }),
+      makeEntry(3, { type: "assistant_message", text: "Backfill is running in the background." }),
+      makeEntry(4, {
+        type: "tool_call",
+        callId: "read-2",
+        name: "read",
+        status: "completed",
+        error: null,
+        detail: { type: "read", filePath: "/repo/status.log" },
+      }),
     ]);
 
     expect(compacted.entries).toHaveLength(4);
-    const firstSummary = compacted.entries[1]!.item;
-    const secondSummary = compacted.entries[3]!.item;
-    expect(firstSummary.type).toBe("tool_call");
-    expect(secondSummary.type).toBe("tool_call");
-    if (firstSummary.type === "tool_call" && secondSummary.type === "tool_call") {
-      expect(secondSummary.callId).toBe(firstSummary.callId);
-      expect(secondSummary.detail.type).toBe("plain_text");
-      if (secondSummary.detail.type === "plain_text") {
-        expect(secondSummary.detail.label).toMatch(/^2 steps/);
-        expect(secondSummary.detail.text).toContain("$ npm test");
-        expect(secondSummary.detail.text).toContain("Edit config.ts");
-      }
+    const firstGroup = compacted.entries[1]!.item;
+    const secondGroup = compacted.entries[3]!.item;
+    expect(firstGroup.type).toBe("tool_call");
+    expect(secondGroup.type).toBe("tool_call");
+    if (firstGroup.type === "tool_call" && secondGroup.type === "tool_call") {
+      expect(firstGroup.status).toBe("running");
+      expect(firstGroup.detail.type === "plain_text" ? firstGroup.detail.label : "").toContain(
+        "1 running",
+      );
+      expect(firstGroup.detail.type === "plain_text" ? firstGroup.detail.text : "").toContain(
+        "$ python backfill.py (running)",
+      );
+      expect(secondGroup.status).toBe("completed");
+      expect(secondGroup.callId).not.toBe(firstGroup.callId);
     }
   });
 
-  it("keeps a live group open across assistant narration", () => {
+  it("cuts off a live group on assistant narration and starts a new group afterwards while preserving running tools", () => {
     const compactor = new MobileLiveStreamCompactor();
-    const first = compactor.transformTimelineItem("agent-1", {
-      type: "tool_call",
-      callId: "shell-1",
-      name: "shell",
-      status: "running",
-      error: null,
-      detail: { type: "shell", command: "npm test" },
-    });
-    const narration = compactor.transformTimelineItem("agent-1", {
-      type: "assistant_message",
-      text: "I will edit the config next.",
-    });
-    const second = compactor.transformTimelineItem("agent-1", {
-      type: "tool_call",
-      callId: "edit-1",
-      name: "edit",
-      status: "running",
-      error: null,
-      detail: { type: "edit", filePath: "/repo/config.ts", unifiedDiff: "-old\n+new" },
-    });
+    const first = compactor.transformTimelineItem(
+      "agent-1",
+      {
+        type: "tool_call",
+        callId: "bg-1",
+        name: "shell",
+        status: "running",
+        error: null,
+        detail: { type: "shell", command: "python backfill.py" },
+      },
+      10,
+      "turn-1",
+    );
+    const narration = compactor.transformTimelineItem(
+      "agent-1",
+      {
+        type: "assistant_message",
+        text: "Backfill started; editing config next.",
+      },
+      11,
+      "turn-1",
+    );
+    const second = compactor.transformTimelineItem(
+      "agent-1",
+      {
+        type: "tool_call",
+        callId: "edit-1",
+        name: "edit",
+        status: "running",
+        error: null,
+        detail: { type: "edit", filePath: "/repo/config.ts", unifiedDiff: "-old\n+new" },
+      },
+      12,
+      "turn-1",
+    );
+    const secondDone = compactor.transformTimelineItem(
+      "agent-1",
+      {
+        type: "tool_call",
+        callId: "edit-1",
+        name: "edit",
+        status: "completed",
+        error: null,
+        detail: { type: "edit", filePath: "/repo/config.ts", unifiedDiff: "-old\n+new" },
+      },
+      13,
+      "turn-1",
+    );
+    const secondNarration = compactor.transformTimelineItem(
+      "agent-1",
+      {
+        type: "assistant_message",
+        text: "Config updated.",
+      },
+      14,
+      "turn-1",
+    );
 
     expect(narration.action).toBe("emit");
-    expect(second.action).toBe("emit");
-    if (first.action === "emit" && first.item.type === "tool_call") {
-      expect(second.action === "emit" && second.item.type === "tool_call").toBe(true);
-      if (second.action === "emit" && second.item.type === "tool_call") {
-        expect(second.item.callId).toBe(first.item.callId);
-      }
+    if (narration.action === "emit") {
+      // bg-1 is genuinely still running, so cutting off the group does not clobber it to completed.
+      expect(narration.settledBefore).toBeUndefined();
     }
+    expect(second.action).toBe("emit");
+    expect(secondDone.action).toBe("emit");
+    if (
+      first.action === "emit" &&
+      first.item.type === "tool_call" &&
+      second.action === "emit" &&
+      second.item.type === "tool_call"
+    ) {
+      expect(second.item.callId).not.toBe(first.item.callId);
+      expect(second.item.detail.type === "plain_text" ? second.item.detail.text : "").not.toContain(
+        "backfill.py",
+      );
+    }
+    expect(secondNarration.action).toBe("emit");
+    if (secondNarration.action === "emit") {
+      // edit-1 already finished, so cutting off settles the group from forceRunning -> completed.
+      expect(secondNarration.settledBefore?.status).toBe("completed");
+    }
+
+    // Explicit turn boundary settles a trailing running group.
+    const third = compactor.transformTimelineItem(
+      "agent-1",
+      {
+        type: "tool_call",
+        callId: "sh-3",
+        name: "shell",
+        status: "running",
+        error: null,
+        detail: { type: "shell", command: "npm test" },
+      },
+      15,
+      "turn-1",
+    );
+    expect(third.action).toBe("emit");
+    const settledAtTurnEnd = compactor.settleAgent("agent-1");
+    expect(settledAtTurnEnd?.status).toBe("completed");
+    expect(settledAtTurnEnd?.detail.type === "plain_text" ? settledAtTurnEnd.detail.text : "").not.toContain(
+      "(running)",
+    );
   });
 });

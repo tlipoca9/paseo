@@ -37,3 +37,8 @@ export function ChatColumnRailSurface({ children }: ChatColumnRailSurfaceProps) 
 export function useChatOutlineRail(): ChatOutlineRailState {
   return DISABLED_CHAT_OUTLINE_RAIL;
 }
+
+/** Width reserved for the right-margin extensions rail (always 0 on native). */
+export function useChatExtensionsRailWidth(): number {
+  return 0;
+}

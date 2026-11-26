@@ -67,6 +67,7 @@ import {
   type ImportedTimelineEntry,
   type ImportableProviderSession,
   type ListImportableSessionsOptions,
+  type McpServerConfig,
 } from "./agent-sdk-types.js";
 import { buildArchivedAgentRecord, type ArchivedStoredAgentRecord } from "./agent-archive.js";
 import type { JsonValue, ProviderOptions } from "@getpaseo/protocol/agent-types";
@@ -113,6 +114,7 @@ import {
   stripInternalPaseoMcpServer,
   withRuntimePaseoMcpServer,
 } from "./runtime-mcp-config.js";
+import type { RuntimePluginMcpServerInfo } from "./agent-extensions.js";
 import { resolveCreateAgentTitles } from "./create-agent-title.js";
 import type { PaseoToolCatalogFactory } from "./tools/types.js";
 import { isPaseoToolPolicyEnabled } from "./paseo-tool-policy.js";
@@ -940,6 +942,7 @@ export class AgentManager {
   private sessionOpenGeneration = 0;
   private readonly sessionOpenGenerations = new Map<string, number>();
   private readonly attachedPluginTools = new Map<string, AttachedAgentTool[]>();
+  private readonly attachedPluginMcpServers = new Map<string, RuntimePluginMcpServerInfo[]>();
   private readonly pluginAgentTools: PluginAgentToolsRuntime | undefined;
   private paseoToolsEnabled = true;
   private paseoToolCatalogFactory: PaseoToolCatalogFactory | null = null;
@@ -1115,8 +1118,46 @@ export class AgentManager {
 
   private detachPluginTools(agentId: string): void {
     this.attachedPluginTools.delete(agentId);
+    this.attachedPluginMcpServers.delete(agentId);
     this.sessionOpenGenerations.delete(agentId);
     this.pluginAgentTools?.detachTools(agentId);
+  }
+
+  getAgentRuntimeMcpInfo(
+    agentId: string,
+    config: {
+      provider: AgentProvider;
+      mcpServers?: Record<string, McpServerConfig> | null;
+    },
+  ): {
+    adapterProvider: AgentProvider;
+    paseoMcpEnabled: boolean;
+    pluginMcpServers: readonly RuntimePluginMcpServerInfo[];
+    agentMcpServers: Record<string, McpServerConfig> | undefined;
+  } {
+    const adapterProvider = this.adapterOf(config.provider);
+    const policy =
+      this.paseoToolPolicies.get(agentId) ??
+      (this.paseoToolsEnabled ? this.resolvePaseoToolPolicy(config.provider) : { enabled: false });
+    const client = this.clients.get(config.provider);
+    const usesNativePaseoTools = Boolean(client?.capabilities.supportsNativePaseoTools);
+    const paseoMcpEnabled =
+      this.paseoToolsEnabled &&
+      isPaseoToolPolicyEnabled(policy) &&
+      (this.mcpBaseUrl !== null || usesNativePaseoTools);
+    const storedConfig = config.mcpServers
+      ? stripInternalPaseoMcpServer({
+          provider: config.provider,
+          cwd: "",
+          mcpServers: config.mcpServers,
+        })
+      : null;
+    return {
+      adapterProvider,
+      paseoMcpEnabled,
+      pluginMcpServers: this.attachedPluginMcpServers.get(agentId) ?? [],
+      agentMcpServers: storedConfig?.mcpServers,
+    };
   }
 
   getPaseoToolPolicy(agentId: string): ProviderPaseoToolsPolicy | undefined {
@@ -6538,6 +6579,21 @@ export class AgentManager {
         appendSystemPrompt = transformed.appendSystemPrompt;
         mcpServers = transformed.mcpServers;
         mcpServerOwners = transformed.mcpServerOwners;
+        const pluginMcpEntries: RuntimePluginMcpServerInfo[] = Object.entries(
+          mcpServers ?? {},
+        ).map(([name, serverConfig]) => ({
+          name,
+          ...(mcpServerOwners?.[name] ? { owner: mcpServerOwners[name] } : {}),
+          transport:
+            serverConfig.type === "stdio" ||
+            serverConfig.type === "http" ||
+            serverConfig.type === "sse"
+              ? serverConfig.type
+              : "unknown",
+        }));
+        if (pluginMcpEntries.length > 0) {
+          this.attachedPluginMcpServers.set(agentId, pluginMcpEntries);
+        }
       }
     }
     const context: AgentLaunchContext = {

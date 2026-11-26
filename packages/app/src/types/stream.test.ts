@@ -2445,7 +2445,7 @@ it("merges adjacent mobile process summaries into one card", () => {
   });
 });
 
-it("merges mobile summaries separated by assistant narration in one turn", () => {
+it("keeps mobile summaries separated by assistant narration as distinct cards in chronological order", () => {
   const summary = (callId: string, text: string) =>
     ({
       type: "timeline" as const,
@@ -2482,13 +2482,24 @@ it("merges mobile summaries separated by assistant narration in one turn", () =>
     new Date(3),
   );
 
-  expect(state.filter((item) => item.kind === "tool_call")).toHaveLength(1);
-  expect(state).toHaveLength(2);
+  expect(state.map((item) => item.kind)).toEqual([
+    "tool_call",
+    "assistant_message",
+    "tool_call",
+  ]);
   expect(state[0]).toMatchObject({
     payload: {
       data: {
         callId: "mobile-group:1",
-        detail: { label: "2 steps" },
+        detail: { label: "1 step", text: "• $ npm test (running)" },
+      },
+    },
+  });
+  expect(state[2]).toMatchObject({
+    payload: {
+      data: {
+        callId: "mobile-group:3",
+        detail: { label: "1 step", text: "• Edit config.ts (running)" },
       },
     },
   });

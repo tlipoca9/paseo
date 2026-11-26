@@ -1,14 +1,26 @@
-import { useCallback, useSyncExternalStore } from "react";
+import { useCallback, useMemo, useSyncExternalStore } from "react";
 import { Text, View } from "react-native";
 import { useTranslation } from "react-i18next";
-import { StyleSheet } from "react-native-unistyles";
-import { ComposerTrackPill, ComposerTrackRow } from "@/composer/tracks";
+import { ArrowUpRight } from "lucide-react-native";
+import { StyleSheet, useUnistyles } from "react-native-unistyles";
+import { ComposerTrackMark, ComposerTrackPill, ComposerTrackRow } from "@/composer/tracks";
 import { LiveElapsed } from "@/components/message";
 import { Button } from "@/components/ui/button";
 import type { PaseoAgentBackgroundWorkItem } from "@getpaseo/client";
+import {
+  filterDuplicateActiveTools,
+  type ActiveToolWorkItem,
+} from "./active-tools";
 import { createHostBackgroundWorkModel } from "./host";
-import { backgroundWorkText } from "./presentation";
+import { backgroundWorkText, formatActiveWorkPillSummary } from "./presentation";
 export { createHostBackgroundWorkModel } from "./host";
+export {
+  areActiveToolWorkItemsEqual,
+  extractActiveToolCalls,
+  type ActiveToolWorkItem,
+} from "./active-tools";
+
+const EMPTY_ACTIVE_TOOLS: readonly ActiveToolWorkItem[] = [];
 
 function kindKey(kind: string): "shell" | "monitor" | "heartbeat" | "other" {
   if (kind === "shell" || kind === "monitor" || kind === "heartbeat") return kind;
@@ -18,9 +30,13 @@ function kindKey(kind: string): "shell" | "monitor" | "heartbeat" | "other" {
 export function BackgroundWorkTrack({
   model,
   count,
+  activeTools = EMPTY_ACTIVE_TOOLS,
+  onJumpToMessage,
 }: {
   model: ReturnType<typeof createHostBackgroundWorkModel>;
   count: number;
+  activeTools?: readonly ActiveToolWorkItem[];
+  onJumpToMessage?: (messageId: string) => void;
 }) {
   const { t } = useTranslation();
   const { items, status, stops } = useSyncExternalStore(
@@ -32,28 +48,56 @@ export function BackgroundWorkTrack({
     (entry) => !items?.some((item) => item.stopToken === entry.item.stopToken),
   );
   const rows = [...(items ?? []), ...missing.map((entry) => entry.item)];
-  if (count === 0 && rows.length === 0) return null;
-  const visibleCount = items?.length || count;
+  const runningTools = useMemo(
+    () => filterDuplicateActiveTools(activeTools, items),
+    [activeTools, items],
+  );
+  const hasNativeBackgroundWork = count > 0 || rows.length > 0;
+  const nativeVisibleCount = items?.length || count;
+  const totalCount = nativeVisibleCount + runningTools.length;
+
+  if (totalCount === 0 && rows.length === 0) return null;
+
+  const fallbackLabel =
+    totalCount === 1
+      ? t("message.backgroundWork.pillOne")
+      : t("message.backgroundWork.pillMany", { count: totalCount });
+
+  let leadTitle: string | null = null;
+  if (items && items.length > 0) {
+    const leadItem = items[0]!;
+    leadTitle = backgroundWorkText(
+      leadItem,
+      t(`message.backgroundWork.${kindKey(leadItem.kind)}`),
+    ).title;
+  } else if (runningTools.length > 0) {
+    leadTitle = runningTools[0]!.title;
+  }
+
+  const pillText = formatActiveWorkPillSummary({
+    count: totalCount,
+    leadTitle,
+    fallbackLabel,
+  });
+
   return (
     <ComposerTrackPill
       testID="background-work"
       panelTitle={t("message.backgroundWork.title")}
+      accessibilityLabel={leadTitle ? `${fallbackLabel}: ${leadTitle}` : fallbackLabel}
       segments={[
         {
           bucket: "running",
-          text:
-            visibleCount === 1
-              ? t("message.backgroundWork.pillOne")
-              : t("message.backgroundWork.pillMany", { count: visibleCount }),
+          text: pillText,
         },
       ]}
     >
-      {status === "loading" || status === "stale" ? (
+      {hasNativeBackgroundWork && (status === "loading" || status === "stale") ? (
         <ComposerTrackRow>
           <Text style={styles.facts}>{t("message.backgroundWork.waiting")}</Text>
         </ComposerTrackRow>
       ) : null}
-      {status === "error" ? (
+      {hasNativeBackgroundWork && status === "error" ? (
         <>
           <ComposerTrackRow>
             <Text style={styles.facts}>{t("message.backgroundWork.error")}</Text>
@@ -77,7 +121,53 @@ export function BackgroundWorkTrack({
           stopStatus={stops?.[item.stopToken ?? ""]?.status}
         />
       ))}
+      {runningTools.map((tool) => (
+        <ActiveToolRow key={tool.id} item={tool} onJumpToMessage={onJumpToMessage} />
+      ))}
     </ComposerTrackPill>
+  );
+}
+
+function ActiveToolRow({
+  item,
+  onJumpToMessage,
+}: {
+  item: ActiveToolWorkItem;
+  onJumpToMessage?: (messageId: string) => void;
+}) {
+  const { t } = useTranslation();
+  const { theme } = useUnistyles();
+  const kind = t(`message.backgroundWork.${item.kind === "shell" ? "shell" : "other"}`);
+  const handlePress = useMemo(
+    () => (onJumpToMessage ? () => onJumpToMessage(item.messageId) : undefined),
+    [item.messageId, onJumpToMessage],
+  );
+
+  return (
+    <ComposerTrackRow
+      onPress={handlePress}
+      closeOnSelect
+      accessibilityLabel={item.title}
+      testID={`active-tool-row-${item.id}`}
+    >
+      <ComposerTrackMark bucket="running" />
+      <View style={styles.row}>
+        <Text style={styles.title} numberOfLines={2}>
+          {item.title}
+        </Text>
+        {item.command ? (
+          <Text style={styles.facts} numberOfLines={1}>
+            {item.command}
+          </Text>
+        ) : null}
+        <Text style={styles.facts}>
+          {kind} · <LiveElapsed startedAt={item.startedAt} active style={styles.facts} />
+        </Text>
+      </View>
+      {handlePress ? (
+        <ArrowUpRight size={14} color={theme.colors.foregroundMuted} strokeWidth={2} />
+      ) : null}
+    </ComposerTrackRow>
   );
 }
 

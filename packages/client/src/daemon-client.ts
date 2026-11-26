@@ -110,6 +110,7 @@ import type {
   ArchiveWorkspaceResponseMessage,
   WorkspaceSetupStatusResponseMessage,
   ListCommandsResponse,
+  ListAgentExtensionsResponse,
   ListProviderFeaturesResponseMessage,
   ProviderControlsListResponseMessage,
   ListProviderModelsResponseMessage,
@@ -667,6 +668,7 @@ type WriteProjectConfigPayload = Extract<
 >["payload"];
 
 type ListCommandsPayload = ListCommandsResponse["payload"];
+export type ListAgentExtensionsPayload = ListAgentExtensionsResponse["payload"];
 type ListCommandsDraftConfig = Pick<
   AgentSessionConfig,
   "provider" | "cwd" | "modeId" | "model" | "thinkingOptionId" | "featureValues" | "providerOptions"
@@ -6498,6 +6500,20 @@ export class DaemonClient {
         ...(options.draftConfig ? { draftConfig: options.draftConfig } : {}),
       },
       responseType: "list_commands_response",
+    });
+  }
+
+  async listAgentExtensions(
+    agentId: string,
+    requestId?: string,
+  ): Promise<ListAgentExtensionsPayload> {
+    return this.sendCorrelatedSessionRequest({
+      requestId,
+      message: {
+        type: "list_agent_extensions_request",
+        agentId,
+      },
+      responseType: "list_agent_extensions_response",
     });
   }
 

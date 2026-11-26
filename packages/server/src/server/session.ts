@@ -132,6 +132,7 @@ import {
 } from "./workspace-labels/index.js";
 
 import { AgentManager, AgentRunCancellationError } from "./agent/agent-manager.js";
+import { discoverAgentExtensions } from "./agent/agent-extensions.js";
 import { buildTimelinePromptIndex } from "./agent/timeline-prompt-index.js";
 import { ProviderSnapshotManager } from "./agent/provider-snapshot-manager.js";
 import type {
@@ -480,13 +481,19 @@ function stitchMobileHistoryGroup<TRange, T extends MobileTimelineEntryShape<TRa
   entries: T[],
   compacted: CompactedMobileTimelineResult<T>,
   previousGroup: { groupId: string; turnId?: string } | null,
+  allowNonLeadingTailStitch: boolean,
 ): CompactedMobileTimelineResult<T> {
   const tailGroup = compacted.tailGroup;
   const sameTurn =
     previousGroup?.turnId !== undefined &&
     tailGroup?.turnId !== undefined &&
     previousGroup.turnId === tailGroup.turnId;
-  if (!previousGroup || !tailGroup || !sameTurn) {
+  const isLeadingTailGroup =
+    entries.length === 1 &&
+    entries[0]?.item.type === "tool_call" &&
+    entries[0].item.name === "mobile_steps" &&
+    entries[0].item.callId === tailGroup?.groupId;
+  if (!previousGroup || !tailGroup || !sameTurn || (!allowNonLeadingTailStitch && !isLeadingTailGroup)) {
     return { entries, tailGroup: compacted.tailGroup };
   }
 
@@ -3822,6 +3829,9 @@ export class Session {
       case "list_commands_request":
         await this.handleListCommandsRequest(msg);
         return;
+      case "list_agent_extensions_request":
+        await this.handleListAgentExtensionsRequest(msg);
+        return;
       case "register_push_token":
         this.handleRegisterPushToken(msg.token);
         return;
@@ -5861,6 +5871,108 @@ export class Session {
         payload: {
           agentId,
           commands: [],
+          error: getErrorMessage(error),
+          requestId,
+        },
+      });
+    }
+  }
+
+  /**
+   * Handle list agent extensions (available MCP servers & skills) request
+   */
+  private async handleListAgentExtensionsRequest(
+    msg: Extract<SessionInboundMessage, { type: "list_agent_extensions_request" }>,
+  ): Promise<void> {
+    const { agentId, requestId } = msg;
+    this.sessionLogger.debug(
+      { agentId },
+      `Handling list agent extensions request for agent ${agentId}`,
+    );
+
+    try {
+      const liveAgent = this.agentManager.getAgent(agentId);
+      const storedRecord = liveAgent ? null : await this.agentStorage.get(agentId);
+      const config = liveAgent
+        ? {
+            provider: liveAgent.config.provider,
+            cwd: liveAgent.config.cwd,
+            mcpServers: liveAgent.config.mcpServers,
+          }
+        : storedRecord
+          ? {
+              provider: storedRecord.provider,
+              cwd: storedRecord.cwd,
+              mcpServers: storedRecord.config?.mcpServers,
+            }
+          : null;
+
+      if (!config) {
+        this.emit({
+          type: "list_agent_extensions_response",
+          payload: {
+            agentId,
+            mcpServers: [],
+            skills: [],
+            error: `Agent not found: ${agentId}`,
+            requestId,
+          },
+        });
+        return;
+      }
+
+      const runtimeMcp = this.agentManager.getAgentRuntimeMcpInfo(agentId, config);
+      const browserToolsEnabled = this.daemonConfigStore.get().browserTools.enabled === true;
+
+      let providerCommands: readonly import("./agent/agent-sdk-types.js").AgentSlashCommand[] = [];
+      if (liveAgent?.session?.listCommands) {
+        try {
+          const listPromise = liveAgent.session.listCommands();
+          const timeoutPromise = new Promise<null>((resolve) => {
+            const timer = setTimeout(() => resolve(null), 2000);
+            timer.unref?.();
+          });
+          const result = await Promise.race([listPromise, timeoutPromise]);
+          if (Array.isArray(result)) {
+            providerCommands = result;
+          }
+        } catch (error) {
+          this.sessionLogger.debug(
+            { err: error, agentId },
+            "Skipping provider listCommands while discovering agent extensions",
+          );
+        }
+      }
+
+      const discovered = await discoverAgentExtensions({
+        provider: config.provider,
+        adapterProvider: runtimeMcp.adapterProvider,
+        cwd: expandTilde(config.cwd),
+        paseoMcpEnabled: runtimeMcp.paseoMcpEnabled,
+        browserToolsEnabled,
+        pluginMcpServers: runtimeMcp.pluginMcpServers,
+        agentMcpServers: runtimeMcp.agentMcpServers,
+        providerCommands,
+      });
+
+      this.emit({
+        type: "list_agent_extensions_response",
+        payload: {
+          agentId,
+          mcpServers: discovered.mcpServers,
+          skills: discovered.skills,
+          error: null,
+          requestId,
+        },
+      });
+    } catch (error) {
+      this.sessionLogger.error({ err: error, agentId }, "Failed to list agent extensions");
+      this.emit({
+        type: "list_agent_extensions_response",
+        payload: {
+          agentId,
+          mcpServers: [],
+          skills: [],
           error: getErrorMessage(error),
           requestId,
         },
@@ -8815,6 +8927,7 @@ export class Session {
           compacted.entries,
           compacted,
           previousGroup ?? null,
+          direction === "tail",
         );
         entries = stitched.entries;
         if (source && (direction === "tail" || direction === "after")) {

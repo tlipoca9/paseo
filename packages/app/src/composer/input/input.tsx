@@ -88,7 +88,11 @@ import { RenderProfile } from "@/utils/render-profiler";
 import { useComposerHeight } from "./height";
 import { ComposerInputPresentation } from "./presentation";
 import { resolveComposerInputMode, type ComposerInputMode } from "@/composer/input-mode";
-import { pasteLinkedClipboardText } from "@/composer/pasted-text";
+import {
+  pasteInternalLinkHintedText,
+  pasteLinkedClipboardText,
+  pasteWeWorkClipboardText,
+} from "@/composer/pasted-text";
 import type { NativePastedFile } from "@/composer/native-pasted-image";
 import {
   EditingTextInput,
@@ -547,7 +551,13 @@ function usePasteEffect(args: PasteEffectArgs): void {
 
       const imageFiles = collectImageFilesFromClipboardData(event.clipboardData);
       if (imageFiles.length === 0) {
-        if (pasteLinkedClipboardText(textarea, event.clipboardData)) event.preventDefault();
+        if (
+          pasteWeWorkClipboardText(textarea, event.clipboardData) ||
+          pasteLinkedClipboardText(textarea, event.clipboardData) ||
+          pasteInternalLinkHintedText(textarea, event.clipboardData)
+        ) {
+          event.preventDefault();
+        }
         return;
       }
       if (!isConnected || !onAddImages) return;

@@ -81,6 +81,7 @@ import { type StreamSegmentRenderers, type StreamViewportHandle } from "./strate
 import { renderStreamRow, type RenderStreamItem } from "./stream-row";
 import { type NearBottom, useIsNearBottom, useNearBottom } from "./near-bottom";
 import { ChatOutlineRail } from "@/agent-stream/chat-outline/rail";
+import { AgentExtensionsRail } from "@/agent-stream/extensions-rail/rail";
 import { useChatOutline } from "@/agent-stream/chat-outline/use-chat-outline";
 import { CHAT_COLUMN_RAIL_DATASET, useChatOutlineRail } from "@/chat-rail";
 import { getHostRuntimeStore } from "@/runtime/host-runtime";
@@ -240,6 +241,7 @@ function renderListEmptyComponent(input: {
 
 export interface AgentStreamViewHandle {
   scrollToBottom(reason?: BottomAnchorLocalRequest["reason"]): void;
+  scrollToMessage(messageId: string): void;
   prepareForViewportChange(): void;
 }
 
@@ -634,6 +636,9 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
       () => ({
         scrollToBottom(reason = "jump-to-bottom") {
           viewportRef.current?.scrollToBottom(reason);
+        },
+        scrollToMessage(messageId: string) {
+          viewportRef.current?.scrollToMessage?.(messageId);
         },
         prepareForViewportChange() {
           viewportRef.current?.prepareForViewportChange();
@@ -1213,6 +1218,11 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
                 onJumpToPrompt={chatOutline.jumpToPrompt}
               />
             ) : null}
+            <AgentExtensionsRail
+              serverId={resolvedServerId}
+              agentId={agentId}
+              streamItems={findItems}
+            />
             <ScrollToBottomButton
               nearBottom={nearBottom}
               isTimelineDetached={isTimelineDetached}

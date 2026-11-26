@@ -1,6 +1,12 @@
 import type { AgentAddress } from "@getpaseo/protocol/addresses";
 import { memo, useCallback, useMemo, type ReactElement } from "react";
-import { BackgroundWorkTrack, createHostBackgroundWorkModel } from "@/background-work";
+import { useStoreWithEqualityFn } from "zustand/traditional";
+import {
+  areActiveToolWorkItemsEqual,
+  BackgroundWorkTrack,
+  createHostBackgroundWorkModel,
+  extractActiveToolCalls,
+} from "@/background-work";
 import { WorkspaceDiffStatPill } from "@/composer/diff-stat-pill";
 import { AgentTaskList } from "@/composer/task-list";
 import { ComposerTrackBar } from "@/composer/tracks";
@@ -36,15 +42,28 @@ export const AgentTracks = memo(function AgentTracks({
   workspaceId,
   agentId,
   parentAgentId,
+  onJumpToMessage,
 }: {
   serverId: string;
   workspaceId: string;
   agentId: string;
   parentAgentId: string | null;
+  onJumpToMessage?: (messageId: string) => void;
 }): ReactElement {
   const subagentRows = useSubagentsForParent({ serverId, parentAgentId: agentId });
   const tasks = useSessionStore((state): TodoEntry[] | undefined =>
     state.sessions[serverId]?.agentTasks.get(agentId),
+  );
+  const activeTools = useStoreWithEqualityFn(
+    useSessionStore,
+    (state) => {
+      const session = state.sessions[serverId];
+      return extractActiveToolCalls(
+        session?.agentStreamTail.get(agentId),
+        session?.agentStreamHead.get(agentId),
+      );
+    },
+    areActiveToolWorkItemsEqual,
   );
   const archiveFinishedSubagents = useArchiveFinishedSubagents({
     serverId,
@@ -121,7 +140,12 @@ export const AgentTracks = memo(function AgentTracks({
 
   return (
     <ComposerTrackBar>
-      <BackgroundWorkTrack model={backgroundModel} count={backgroundWorkCount} />
+      <BackgroundWorkTrack
+        model={backgroundModel}
+        count={backgroundWorkCount}
+        activeTools={activeTools}
+        onJumpToMessage={onJumpToMessage}
+      />
       {parentAgentId ? <ParentAgentPill serverId={serverId} parentAgentId={parentAgentId} /> : null}
       <AgentTaskList tasks={tasks} />
       <SubagentsTrack

@@ -8,6 +8,7 @@ export type WorkspaceTabMenuSurface = "desktop" | "mobile";
 export interface WorkspaceTabMenuLabels {
   copyResumeCommand: string;
   copyAgentId: string;
+  copySessionReference?: string;
   copyTerminalId: string;
   copyFilePath: string;
   rename: string;
@@ -24,6 +25,7 @@ export interface WorkspaceTabMenuLabels {
 export const DEFAULT_WORKSPACE_TAB_MENU_LABELS: WorkspaceTabMenuLabels = {
   copyResumeCommand: i18n.t("workspace.tabs.menu.copyResumeCommand"),
   copyAgentId: i18n.t("workspace.tabs.menu.copyAgentId"),
+  copySessionReference: i18n.t("workspace.tabs.menu.copySessionReference"),
   copyTerminalId: i18n.t("workspace.tabs.menu.copyTerminalId"),
   copyFilePath: i18n.t("workspace.tabs.menu.copyFilePath"),
   rename: i18n.t("workspace.tabs.menu.rename"),
@@ -75,6 +77,7 @@ interface BuildWorkspaceTabMenuEntriesInput {
   menuTestIDBase: string;
   onCopyResumeCommand: (agentId: string) => Promise<void> | void;
   onCopyAgentId: (agentId: string) => Promise<void> | void;
+  onCopySessionReference?: (agentId: string) => Promise<void> | void;
   onCopyTerminalId: (terminalId: string) => Promise<void> | void;
   onCopyFilePath: (path: string) => Promise<void> | void;
   onReloadAgent: (agentId: string) => Promise<void> | void;
@@ -92,6 +95,7 @@ interface BuildWorkspaceDesktopTabActionsInput {
   tabCount: number;
   onCopyResumeCommand: (agentId: string) => Promise<void> | void;
   onCopyAgentId: (agentId: string) => Promise<void> | void;
+  onCopySessionReference?: (agentId: string) => Promise<void> | void;
   onCopyTerminalId: (terminalId: string) => Promise<void> | void;
   onCopyFilePath: (path: string) => Promise<void> | void;
   onReloadAgent: (agentId: string) => Promise<void> | void;
@@ -179,6 +183,7 @@ export function buildWorkspaceTabMenuEntries(
     menuTestIDBase,
     onCopyResumeCommand,
     onCopyAgentId,
+    onCopySessionReference,
     onCopyTerminalId,
     onCopyFilePath,
     onReloadAgent,
@@ -217,6 +222,19 @@ export function buildWorkspaceTabMenuEntries(
         void onCopyAgentId(agentId);
       },
     });
+    if (onCopySessionReference) {
+      entries.push({
+        kind: "item",
+        key: "copy-session-reference",
+        label:
+          labels.copySessionReference ?? DEFAULT_WORKSPACE_TAB_MENU_LABELS.copySessionReference!,
+        icon: "copy",
+        testID: `${menuTestIDBase}-copy-session-reference`,
+        onSelect: () => {
+          void onCopySessionReference(agentId);
+        },
+      });
+    }
   }
 
   if (tab.target.kind === "terminal") {
@@ -341,6 +359,7 @@ export function buildWorkspaceDesktopTabActions(
       menuTestIDBase: contextMenuTestId,
       onCopyResumeCommand: input.onCopyResumeCommand,
       onCopyAgentId: input.onCopyAgentId,
+      onCopySessionReference: input.onCopySessionReference,
       onCopyTerminalId: input.onCopyTerminalId,
       onCopyFilePath: input.onCopyFilePath,
       onReloadAgent: input.onReloadAgent,

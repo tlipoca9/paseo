@@ -238,9 +238,6 @@ export function compactMobileTimelineEntriesWithState<
   const result: T[] = [];
   let pending: T[] = [];
   let tailGroup: CompactedMobileTimelineResult<T>["tailGroup"] = null;
-  let continuationGroupId: string | null = null;
-  let continuationTurnId: string | undefined;
-  let continuationSteps: MobileStepRecord[] = [];
 
   const flush = (isEnd: boolean) => {
     if (pending.length === 0) return;
@@ -253,32 +250,14 @@ export function compactMobileTimelineEntriesWithState<
         continue;
       }
       const step = toStepRecord(entry.item, `${entry.seqStart}:${i}`);
-      // Older groups followed by a reply or turn boundary cannot still be running.
-      if (!isEnd && step.status === "running") {
-        step.status = "completed";
-        step.line = step.line.replace(/ \(running\)$/, "");
-      }
       stepMap.set(step.key, step);
     }
     if (stepMap.size === 0) {
       pending = [];
       return;
     }
-    const continuingGroupId =
-      continuationGroupId &&
-      continuationTurnId !== undefined &&
-      first.turnId !== undefined &&
-      continuationTurnId === first.turnId
-        ? continuationGroupId
-        : null;
-    const groupId = continuingGroupId ?? `mobile-group:${first.seqStart}`;
-    const steps = continuingGroupId
-      ? [
-          ...new Map(
-            [...continuationSteps, ...stepMap.values()].map((step) => [step.key, step]),
-          ).values(),
-        ]
-      : [...stepMap.values()];
+    const groupId = `mobile-group:${first.seqStart}`;
+    const steps = [...stepMap.values()];
     const item = buildCompactGroupToolCall(groupId, steps);
     const mergedRanges = pending.flatMap((entry) => entry.sourceSeqRanges);
     result.push({
@@ -288,9 +267,6 @@ export function compactMobileTimelineEntriesWithState<
       seqEnd: last.seqEnd,
       sourceSeqRanges: mergedRanges,
     });
-    continuationGroupId = groupId;
-    continuationTurnId = first.turnId;
-    continuationSteps = steps;
     if (isEnd) {
       tailGroup = {
         groupId,
@@ -307,28 +283,11 @@ export function compactMobileTimelineEntriesWithState<
       pending.push(entry);
     } else {
       flush(false);
-      if (entry.item.type !== "assistant_message" || entry.item.text.trim().length === 0) {
-        continuationGroupId = null;
-        continuationTurnId = undefined;
-        continuationSteps = [];
-        tailGroup = null;
-      }
+      tailGroup = null;
       result.push(entry);
     }
   }
   flush(true);
-
-  // A page can end with the assistant's interstitial text after a process
-  // group. Keep that group's state for a live continuation in the same turn.
-  if (!tailGroup && continuationGroupId && continuationSteps.length > 0) {
-    const summary = buildCompactGroupToolCall(continuationGroupId, continuationSteps);
-    tailGroup = {
-      groupId: continuationGroupId,
-      ...(continuationTurnId ? { turnId: continuationTurnId } : {}),
-      steps: continuationSteps,
-      lastSignature: buildSignature(summary),
-    };
-  }
 
   return { entries: result, tailGroup };
 }
@@ -381,25 +340,36 @@ export class MobileLiveStreamCompactor {
     return group ? { groupId: group.groupId, ...(group.turnId ? { turnId: group.turnId } : {}) } : null;
   }
 
-  /**
-   * Settle any active running group into a completed summary before closing the group
-   * (for example on turn_completed / turn_failed / turn_canceled or before a new reply).
-   */
-  settleAgent(agentId: string): Extract<AgentTimelineItem, { type: "tool_call" }> | null {
+  private closeActiveGroup(
+    agentId: string,
+    forceCompleteRunningSteps: boolean,
+  ): Extract<AgentTimelineItem, { type: "tool_call" }> | null {
     const group = this.activeGroups.get(agentId);
     this.activeGroups.delete(agentId);
     if (!group || group.steps.size === 0) return null;
 
-    let hadRunning = false;
-    for (const step of group.steps.values()) {
-      if (step.status === "running") {
-        hadRunning = true;
-        step.status = "completed";
-        step.line = step.line.replace(/ \(running\)$/, "");
+    if (forceCompleteRunningSteps) {
+      for (const step of group.steps.values()) {
+        if (step.status === "running") {
+          step.status = "completed";
+          step.line = step.line.replace(/ \(running\)$/, "");
+        }
       }
     }
-    if (!hadRunning) return null;
-    return buildCompactGroupToolCall(group.groupId, [...group.steps.values()]);
+
+    const settled = buildCompactGroupToolCall(group.groupId, [...group.steps.values()], false);
+    if (buildSignature(settled) === group.lastSignature) {
+      return null;
+    }
+    return settled;
+  }
+
+  /**
+   * Settle any active running group into a completed summary before closing the group
+   * (on explicit turn boundaries: turn_completed / turn_failed / turn_canceled).
+   */
+  settleAgent(agentId: string): Extract<AgentTimelineItem, { type: "tool_call" }> | null {
+    return this.closeActiveGroup(agentId, true);
   }
 
   resetAgent(agentId: string): void {
@@ -432,15 +402,12 @@ export class MobileLiveStreamCompactor {
       return { action: "drop" };
     }
 
-    // Assistant narration between tools belongs to the same turn. Let it pass
-    // through without settling the compact process group, so the next tool
-    // updates the existing mobile summary card.
-    if (item.type === "assistant_message" && item.text.trim().length > 0) {
-      return { action: "emit", item };
-    }
-
     if (!isMobileCompactableItem(item)) {
-      const settledBefore = this.settleAgent(agentId) ?? undefined;
+      // Close the active process group at any non-compactable boundary (including
+      // non-empty assistant_message) so subsequent tool calls start a new group in
+      // chronological order. Preserve genuinely running steps until they finish or
+      // the turn explicitly terminates.
+      const settledBefore = this.closeActiveGroup(agentId, false) ?? undefined;
       return { action: "emit", item, ...(settledBefore ? { settledBefore } : {}) };
     }
 

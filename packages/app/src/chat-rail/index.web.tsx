@@ -11,6 +11,10 @@ import {
   CHAT_OUTLINE_GUTTER_INSET,
   CHAT_OUTLINE_MIN_PANEL_WIDTH,
 } from "@/agent-stream/chat-outline/geometry";
+import {
+  resolveChatRightMarginWidth,
+  resolveExtensionsRailWidth,
+} from "@/agent-stream/extensions-rail/geometry";
 import { resolveContentMaxWidth, useSettings } from "@/hooks/use-settings";
 import { useSessionStore } from "@/stores/session-store";
 import { CHAT_COLUMN_BASE_GUTTER, resolveChatColumnGutters } from "./gutters";
@@ -40,6 +44,7 @@ const DISABLED_CHAT_OUTLINE_RAIL: ChatOutlineRailState = Object.freeze({
 });
 
 const ChatOutlineRailContext = createContext<ChatOutlineRailState>(DISABLED_CHAT_OUTLINE_RAIL);
+const ChatExtensionsRailWidthContext = createContext<number>(0);
 
 export const CHAT_COLUMN_RAIL_DATASET: Record<string, string> | undefined = Object.freeze({
   chatRailLane: "true",
@@ -68,9 +73,13 @@ function cssLength(value: number | string): string {
  */
 export function ChatColumnRailSurface({ serverId, children }: ChatColumnRailSurfaceProps) {
   const surfaceRef = useRef<HTMLDivElement | null>(null);
+  const paneWidthRef = useRef(0);
   const [isBelow, setIsBelow] = useState(true);
+  const [extensionsRailWidth, setExtensionsRailWidth] = useState(0);
   const chatOutlineEnabled = useSettings((settings) => settings.chatOutlineEnabled);
   const contentMaxWidth = useSettings(resolveContentMaxWidth);
+  const contentMaxWidthRef = useRef(contentMaxWidth);
+  contentMaxWidthRef.current = contentMaxWidth;
   const supportsChatOutline = useSessionStore(
     (state) => state.sessions[serverId]?.serverInfo?.features?.agentTimelinePromptIndex === true,
   );
@@ -81,8 +90,18 @@ export function ChatColumnRailSurface({ serverId, children }: ChatColumnRailSurf
     const update = (width: number) => {
       // Retained inactive tabs sit under `display: none` and report 0; ignore them.
       if (width <= 0) return;
+      paneWidthRef.current = width;
       const next = width < CHAT_OUTLINE_MIN_PANEL_WIDTH;
       setIsBelow((current) => (current === next ? current : next));
+      const nextExtensionsWidth = resolveExtensionsRailWidth(
+        resolveChatRightMarginWidth({
+          paneWidth: width,
+          contentMaxWidth: contentMaxWidthRef.current,
+        }),
+      );
+      setExtensionsRailWidth((current) =>
+        current === nextExtensionsWidth ? current : nextExtensionsWidth,
+      );
     };
     update(node.getBoundingClientRect().width);
     if (typeof ResizeObserver === "undefined") return;
@@ -94,6 +113,17 @@ export function ChatColumnRailSurface({ serverId, children }: ChatColumnRailSurf
     observer.observe(node);
     return () => observer.disconnect();
   }, []);
+
+  useLayoutEffect(() => {
+    const width = paneWidthRef.current;
+    if (width <= 0) return;
+    const nextExtensionsWidth = resolveExtensionsRailWidth(
+      resolveChatRightMarginWidth({ paneWidth: width, contentMaxWidth }),
+    );
+    setExtensionsRailWidth((current) =>
+      current === nextExtensionsWidth ? current : nextExtensionsWidth,
+    );
+  }, [contentMaxWidth]);
 
   const enabled = supportsChatOutline && chatOutlineEnabled;
   const inset = enabled && !isBelow ? CHAT_OUTLINE_GUTTER_INSET : 0;
@@ -127,17 +157,23 @@ export function ChatColumnRailSurface({ serverId, children }: ChatColumnRailSurf
 
   return (
     <ChatOutlineRailContext.Provider value={outlineRail}>
-      <div
-        ref={surfaceRef}
-        style={surfaceStyle}
-        data-chat-rail-active={inset > 0 ? "true" : undefined}
-      >
-        {children}
-      </div>
+      <ChatExtensionsRailWidthContext.Provider value={extensionsRailWidth}>
+        <div
+          ref={surfaceRef}
+          style={surfaceStyle}
+          data-chat-rail-active={inset > 0 ? "true" : undefined}
+        >
+          {children}
+        </div>
+      </ChatExtensionsRailWidthContext.Provider>
     </ChatOutlineRailContext.Provider>
   );
 }
 
 export function useChatOutlineRail(): ChatOutlineRailState {
   return useContext(ChatOutlineRailContext);
+}
+
+export function useChatExtensionsRailWidth(): number {
+  return useContext(ChatExtensionsRailWidthContext);
 }

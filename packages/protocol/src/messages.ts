@@ -3280,6 +3280,12 @@ export const ListCommandsRequestSchema = z.object({
   requestId: z.string(),
 });
 
+export const ListAgentExtensionsRequestSchema = z.object({
+  type: z.literal("list_agent_extensions_request"),
+  agentId: z.string(),
+  requestId: z.string(),
+});
+
 export const RegisterPushTokenMessageSchema = z.object({
   type: z.literal("register_push_token"),
   token: z.string(),
@@ -3768,6 +3774,7 @@ export const SessionInboundMessageSchema = z.discriminatedUnion("type", [
   ClientHeartbeatMessageSchema,
   PingMessageSchema,
   ListCommandsRequestSchema,
+  ListAgentExtensionsRequestSchema,
   RegisterPushTokenMessageSchema,
   PushUnregisterRequestSchema,
   ListTerminalsRequestSchema,
@@ -4090,6 +4097,7 @@ export const ServerInfoStatusPayloadSchema = z
         rewind: z.boolean().optional(),
         // COMPAT(agentTimelinePromptIndex): added in v0.2.X, drop the gate when floor >= v0.2.X.
         agentTimelinePromptIndex: z.boolean().optional(),
+        agentExtensions: z.boolean().optional(),
         // COMPAT(agentHistorySearch): added in v0.3.0, remove gate after 2027-02-07.
         agentHistorySearch: z.boolean().optional(),
         // COMPAT(checkoutRefresh): added in v0.1.86, remove gate after 2026-11-29.
@@ -7154,6 +7162,49 @@ export const ListCommandsResponseSchema = z.object({
   }),
 });
 
+export const AgentExtensionMcpSourceSchema = z.enum([
+  "paseo",
+  "plugin",
+  "agent",
+  "workspace",
+  "global",
+]);
+
+export const AgentExtensionMcpTransportSchema = z.enum(["stdio", "http", "sse", "unknown"]);
+
+export const AgentExtensionMcpServerSchema = z.object({
+  name: z.string(),
+  source: AgentExtensionMcpSourceSchema,
+  transport: AgentExtensionMcpTransportSchema.optional(),
+  badges: z.array(z.string()).optional(),
+  detail: z.string().optional(),
+});
+
+export const AgentExtensionSkillScopeSchema = z.enum([
+  "workspace",
+  "global",
+  "builtin",
+  "provider",
+]);
+
+export const AgentExtensionSkillSchema = z.object({
+  name: z.string(),
+  description: z.string(),
+  scope: AgentExtensionSkillScopeSchema,
+  path: z.string().optional(),
+});
+
+export const ListAgentExtensionsResponseSchema = z.object({
+  type: z.literal("list_agent_extensions_response"),
+  payload: z.object({
+    agentId: z.string(),
+    mcpServers: z.array(AgentExtensionMcpServerSchema),
+    skills: z.array(AgentExtensionSkillSchema),
+    error: z.string().nullable(),
+    requestId: z.string(),
+  }),
+});
+
 // ============================================================================
 // Terminal Outbound Messages
 // ============================================================================
@@ -7893,6 +7944,7 @@ export const SessionOutboundMessageSchema = z.discriminatedUnion("type", [
   UsageListReportsUpdateMessageSchema,
   UsageListReportsResponseMessageSchema,
   ListCommandsResponseSchema,
+  ListAgentExtensionsResponseSchema,
   ListTerminalsResponseSchema,
   TerminalsChangedSchema,
   CreateTerminalResponseSchema,
@@ -8389,6 +8441,13 @@ export type ClearAgentAttentionResponseMessage = z.infer<
 export type ClientHeartbeatMessage = z.infer<typeof ClientHeartbeatMessageSchema>;
 export type ListCommandsRequest = z.infer<typeof ListCommandsRequestSchema>;
 export type ListCommandsResponse = z.infer<typeof ListCommandsResponseSchema>;
+export type AgentExtensionMcpSource = z.infer<typeof AgentExtensionMcpSourceSchema>;
+export type AgentExtensionMcpTransport = z.infer<typeof AgentExtensionMcpTransportSchema>;
+export type AgentExtensionMcpServer = z.infer<typeof AgentExtensionMcpServerSchema>;
+export type AgentExtensionSkillScope = z.infer<typeof AgentExtensionSkillScopeSchema>;
+export type AgentExtensionSkill = z.infer<typeof AgentExtensionSkillSchema>;
+export type ListAgentExtensionsRequest = z.infer<typeof ListAgentExtensionsRequestSchema>;
+export type ListAgentExtensionsResponse = z.infer<typeof ListAgentExtensionsResponseSchema>;
 export type RegisterPushTokenMessage = z.infer<typeof RegisterPushTokenMessageSchema>;
 export type PushUnregisterRequest = z.infer<typeof PushUnregisterRequestSchema>;
 export type PushUnregisterResponse = z.infer<typeof PushUnregisterResponseSchema>;

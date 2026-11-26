@@ -57,6 +57,7 @@ import {
   ensureNotificationCenterRegistration,
 } from "./features/notifications.js";
 import { createExternalUrlOpener } from "./features/opener.js";
+import { readWeWorkClipboardPasteAsync } from "./features/wework-clipboard.js";
 import { createBrowserCaptureService } from "./features/browser-capture.js";
 import { registerEditorTargetHandlers } from "./features/editor-targets/ipc.js";
 import { resolveAppIconPath } from "./features/stamped-icon.js";
@@ -559,6 +560,20 @@ ipcMain.handle("paseo:browser:capture-element", (event, browserId: unknown, rect
 ipcMain.handle("paseo:browser:copy-element", (_event, payload: unknown) =>
   browserCapture.copy(payload),
 );
+
+ipcMain.on("paseo:clipboard:read-wework", (event, rawPlainText: unknown) => {
+  void readWeWorkClipboardPasteAsync(
+    clipboard,
+    process.platform,
+    typeof rawPlainText === "string" ? rawPlainText : undefined,
+  )
+    .then((result) => {
+      event.returnValue = result;
+    })
+    .catch(() => {
+      event.returnValue = null;
+    });
+});
 
 protocol.registerSchemesAsPrivileged([
   {

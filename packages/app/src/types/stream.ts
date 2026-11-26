@@ -1295,38 +1295,11 @@ function appendAgentToolCall(input: AppendAgentToolCallInput): StreamItem[] {
   const identity = agentToolCallIdentity({ callId: data.callId, turnId });
   const existingIndex = findExistingTimelineIdentityIndex(state, identity);
 
-  // A paginated mobile history window or an interstitial assistant message can
-  // split one compact process group into different call ids. Merge summaries
-  // within the same turn before appending so one activity block stays one card.
+  // A paginated mobile history window can split one contiguous compact process
+  // group into two adjacent mobile_steps items with different call ids. Merge
+  // only adjacent summaries so summaries separated by assistant messages keep
+  // their chronological order.
   if (data.name === "mobile_steps" && existingIndex < 0) {
-    if (turnId) {
-      const sameTurnIndexes = state.flatMap((entry, index) =>
-        isAgentToolCallItem(entry) &&
-        entry.payload.data.name === "mobile_steps" &&
-        entry.turnId === turnId
-          ? [index]
-          : [],
-      );
-      if (sameTurnIndexes.length > 0) {
-        const firstIndex = sameTurnIndexes[0]!;
-        let merged = state[firstIndex] as AgentToolCallItem;
-        for (const index of sameTurnIndexes.slice(1)) {
-          const candidate = state[index] as AgentToolCallItem;
-          merged = mergeAdjacentMobileStepCalls(
-            merged,
-            candidate.payload.data,
-            candidate.timestamp,
-            candidate.timelineCursor,
-            candidate.turnId,
-          );
-        }
-        merged = mergeAdjacentMobileStepCalls(merged, data, timestamp, timelineCursor, turnId);
-        const duplicateIndexes = new Set(sameTurnIndexes.slice(1));
-        return state
-          .map((entry, index) => (index === firstIndex ? merged : entry))
-          .filter((_, index) => !duplicateIndexes.has(index));
-      }
-    }
     const previous = state[state.length - 1];
     if (
       previous &&

@@ -12,6 +12,7 @@ import {
 } from "@/assistant-file-links";
 import { useFileExplorerActions } from "@/hooks/use-file-explorer-actions";
 import { useWindowLayout, resolveWorkspaceActionPlacement } from "@/window-layout";
+import { formatAgentSessionReference } from "@/hooks/use-workspace-clipboard-actions";
 import { revealWorkspaceTab } from "@/workspace-tabs/navigation";
 import { ExplorerSidebarDock } from "@/screens/workspace/explorer-sidebar";
 import { ForgeShorthandProvider } from "@/git/forge-shorthand";
@@ -2121,6 +2122,32 @@ function WorkspaceScreenContent({
     [toast, t],
   );
 
+  const handleCopySessionReference = useCallback(
+    async (agentId: string) => {
+      if (!agentId) return;
+      const session = useSessionStore.getState().sessions[normalizedServerId];
+      const agent = session?.agents.get(agentId) ?? session?.agentDetails.get(agentId) ?? null;
+      const descriptor = session?.workspaces.get(normalizedWorkspaceId) ?? null;
+      const workspaceTitle =
+        descriptor?.title?.trim() || descriptor?.name?.trim() || normalizedWorkspaceId;
+      const cwd = agent?.cwd?.trim() || workspaceDirectory?.trim() || descriptor?.workspaceDirectory;
+      const reference = formatAgentSessionReference({
+        agentId,
+        agentTitle: agent?.title,
+        workspaceTitle,
+        workspaceId: normalizedWorkspaceId,
+        cwd,
+      });
+      try {
+        await Clipboard.setStringAsync(reference);
+        toast.copied(t("workspace.tabs.toasts.sessionReferenceCopiedLabel"));
+      } catch {
+        toast.error(t("workspace.tabs.toasts.copyFailed"));
+      }
+    },
+    [normalizedServerId, normalizedWorkspaceId, t, toast, workspaceDirectory],
+  );
+
   const handleCopyTerminalId = useCallback(
     async (terminalId: string) => {
       if (!terminalId) return;
@@ -3371,6 +3398,7 @@ function WorkspaceScreenContent({
           onCreateTerminal={handleCreateTerminal}
           onCopyResumeCommand={handleCopyResumeCommand}
           onCopyAgentId={handleCopyAgentId}
+          onCopySessionReference={handleCopySessionReference}
           onCopyTerminalId={handleCopyTerminalId}
           onCopyFilePath={handleCopyFilePath}
           onReloadAgent={handleReloadAgent}
@@ -3391,6 +3419,7 @@ function WorkspaceScreenContent({
       handleCreateTerminal,
       handleCopyResumeCommand,
       handleCopyAgentId,
+      handleCopySessionReference,
       handleCopyTerminalId,
       handleCopyFilePath,
       handleReloadAgent,
@@ -3507,6 +3536,7 @@ function WorkspaceScreenContent({
         onCloseTab={handleCloseTabById}
         onCopyResumeCommand={handleCopyResumeCommand}
         onCopyAgentId={handleCopyAgentId}
+        onCopySessionReference={handleCopySessionReference}
         onCopyTerminalId={handleCopyTerminalId}
         onCopyFilePath={handleCopyFilePath}
         onReloadAgent={handleReloadAgent}
@@ -3543,6 +3573,7 @@ function WorkspaceScreenContent({
     handleCloseTabById,
     handleCopyResumeCommand,
     handleCopyAgentId,
+    handleCopySessionReference,
     handleCopyTerminalId,
     handleCopyFilePath,
     handleReloadAgent,
@@ -3629,6 +3660,7 @@ function WorkspaceScreenContent({
                 onCloseTab={handleCloseTabById}
                 onCopyResumeCommand={handleCopyResumeCommand}
                 onCopyAgentId={handleCopyAgentId}
+                onCopySessionReference={handleCopySessionReference}
                 onCopyTerminalId={handleCopyTerminalId}
                 onCopyFilePath={handleCopyFilePath}
                 onReloadAgent={handleReloadAgent}
@@ -3671,6 +3703,7 @@ function WorkspaceScreenContent({
         onCreateNewTab={handleCreateNewTab}
         onCopyResumeCommand={handleCopyResumeCommand}
         onCopyAgentId={handleCopyAgentId}
+        onCopySessionReference={handleCopySessionReference}
         onCopyTerminalId={handleCopyTerminalId}
         onCopyFilePath={handleCopyFilePath}
         onReloadAgent={handleReloadAgent}
@@ -3712,6 +3745,7 @@ function WorkspaceScreenContent({
     handleCreateNewTab,
     handleCopyResumeCommand,
     handleCopyAgentId,
+    handleCopySessionReference,
     handleCopyTerminalId,
     handleCopyFilePath,
     handleReloadAgent,

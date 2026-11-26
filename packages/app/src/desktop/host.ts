@@ -172,6 +172,10 @@ export interface DesktopInvokeBridge {
   invoke?: (command: string, args?: Record<string, unknown>) => Promise<unknown>;
 }
 
+export interface DesktopClipboardBridge {
+  readWeWorkPaste?: (plainText?: string) => string | null;
+}
+
 export interface DesktopHostBridge {
   platform?: string;
   windowChromeMode?: string;
@@ -187,6 +191,7 @@ export interface DesktopHostBridge {
   opener?: DesktopOpenerBridge;
   editor?: DesktopEditorBridge;
   webUtils?: DesktopWebUtilsBridge;
+  clipboard?: DesktopClipboardBridge;
   menu?: DesktopMenuBridge;
   browser?: DesktopBrowserBridge;
 }

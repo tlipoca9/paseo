@@ -121,6 +121,7 @@ export interface SidebarWorkspaceMenuProps {
   workspaceLabels?: readonly string[];
   onCopyPath?: () => void;
   onCopyBranchName?: () => void;
+  onCopySessionReference?: () => void;
   onRename?: () => void;
   onMarkAsRead?: () => void;
   onMarkAsUnread?: () => void;
@@ -169,6 +170,7 @@ function SidebarWorkspaceMenuItems({
   workspaceId,
   onCopyPath,
   onCopyBranchName,
+  onCopySessionReference,
   onRename,
   onMarkAsRead,
   onMarkAsUnread,
@@ -211,6 +213,16 @@ function SidebarWorkspaceMenuItems({
           onSelect={onCopyBranchName}
         >
           {t("sidebar.workspace.actions.copyBranchName")}
+        </WorkspaceMenuItem>
+      ) : null}
+      {onCopySessionReference ? (
+        <WorkspaceMenuItem
+          surface={surface}
+          testID={`sidebar-workspace-menu-copy-session-reference-${workspaceKey}`}
+          leading={copyLeadingIcon}
+          onSelect={onCopySessionReference}
+        >
+          {t("sidebar.workspace.actions.copySessionReference")}
         </WorkspaceMenuItem>
       ) : null}
       {onRename ? (
@@ -291,6 +303,7 @@ export function SidebarWorkspaceMenu({
   workspaceLabels,
   onCopyPath,
   onCopyBranchName,
+  onCopySessionReference,
   onRename,
   onMarkAsRead,
   onMarkAsUnread,
@@ -337,6 +350,7 @@ export function SidebarWorkspaceMenu({
           workspaceLabels={workspaceLabels}
           onCopyPath={onCopyPath}
           onCopyBranchName={onCopyBranchName}
+          onCopySessionReference={onCopySessionReference}
           onRename={onRename}
           onMarkAsRead={onMarkAsRead}
           onMarkAsUnread={onMarkAsUnread}
@@ -370,6 +384,7 @@ export function SidebarWorkspaceContextMenu({
   workspaceKey,
   onCopyPath,
   onCopyBranchName,
+  onCopySessionReference,
   onRename,
   onMarkAsRead,
   onMarkAsUnread,
@@ -451,6 +466,7 @@ export function SidebarWorkspaceContextMenu({
           workspaceLabels={workspaceTarget.labels}
           onCopyPath={onCopyPath}
           onCopyBranchName={onCopyBranchName}
+          onCopySessionReference={onCopySessionReference}
           onRename={onRename}
           onMarkAsRead={onMarkAsRead}
           onMarkAsUnread={onMarkAsUnread}
