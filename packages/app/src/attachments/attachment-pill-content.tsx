@@ -89,15 +89,30 @@ export function getAgentAttachmentPillContent(
       };
     case "text":
       if (attachment.externalResource) {
-        const isWeWork = attachment.externalResource.provider === "wework";
+        const { provider, providerLabel, identifier, title } = attachment.externalResource;
+        const isDotSeparated =
+          provider === "wework" ||
+          provider === "gongfeng" ||
+          provider === "tapd" ||
+          provider === "iwiki";
+        let icon: ReactNode = attachmentGithubIssueIcon;
+        if (provider === "wework") {
+          icon = attachmentMessageSquareIcon;
+        } else if (provider === "gongfeng") {
+          icon = attachmentGithubPrIcon;
+        } else if (provider === "tapd") {
+          icon = attachmentGithubIssueIcon;
+        } else if (provider === "iwiki") {
+          icon = attachmentFileIcon;
+        }
         return {
-          icon: isWeWork ? attachmentMessageSquareIcon : attachmentGithubIssueIcon,
-          title: attachment.externalResource.title,
-          subtitle: isWeWork
-            ? attachment.externalResource.identifier
-              ? `${attachment.externalResource.providerLabel} · ${attachment.externalResource.identifier}`
-              : attachment.externalResource.providerLabel
-            : `${attachment.externalResource.providerLabel} ${attachment.externalResource.identifier}`,
+          icon,
+          title,
+          subtitle: isDotSeparated
+            ? identifier
+              ? `${providerLabel} · ${identifier}`
+              : providerLabel
+            : `${providerLabel} ${identifier}`,
         };
       }
       return {

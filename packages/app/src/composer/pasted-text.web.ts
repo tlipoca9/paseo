@@ -1,9 +1,12 @@
 import TurndownService from "turndown";
 import { tables } from "turndown-plugin-gfm";
-import type { WeWorkMessageComposerAttachment } from "@/attachments/types";
+import type {
+  InternalLinkComposerAttachment,
+  WeWorkMessageComposerAttachment,
+} from "@/attachments/types";
 import { getDesktopHost, type WeWorkClipboardData } from "@/desktop/host";
 import { createAssistantMarkdownParser } from "@/utils/assistant-markdown-parser";
-import { appendInternalLinkHints } from "./internal-link-hints";
+import { extractInternalLinkAttachments } from "./internal-link-hints";
 
 export interface WeWorkPasteCallbacks {
   onAddAttachment: (attachment: WeWorkMessageComposerAttachment) => void;
@@ -63,7 +66,7 @@ export function pasteLinkedClipboardText(
   // Copy actions already put complete Markdown on the clipboard. Keep that
   // representation, including tables and formatting, whenever it carries the URLs.
   if (containsDestinations(plainText, destinations)) return false;
-  const text = appendInternalLinkHints(markdown.turndown(fragment.body));
+  const text = markdown.turndown(fragment.body);
   input.focus();
   // Direct value assignment drops the textarea's undo history. This also emits
   // the normal input event so the editor publishes its new draft as for typing.
@@ -150,17 +153,28 @@ export function handleWeWorkClipboardPaste(
 }
 
 /**
- * Paste plain text with lightweight MCP hints appended for internal dev links
- * (Gongfeng / TAPD / iWiki). Returns false when no new hint applies.
+ * Extract internal dev links (Gongfeng / TAPD / iWiki) from clipboard plain
+ * text and HTML link destinations without mutating or blocking the paste.
  */
-export function pasteInternalLinkHintedText(
-  input: HTMLElement,
+export function extractInternalLinksFromClipboard(
   clipboard: Pick<DataTransfer, "getData"> | null,
-): boolean {
-  const plainText = clipboard?.getData("text/plain") ?? "";
-  if (!plainText) return false;
-  const enhanced = appendInternalLinkHints(plainText);
-  if (enhanced === plainText) return false;
-  input.focus();
-  return input.ownerDocument.execCommand("insertText", false, enhanced);
+): InternalLinkComposerAttachment[] {
+  if (!clipboard) return [];
+  const plainText = clipboard.getData("text/plain") ?? "";
+  const html = clipboard.getData("text/html") ?? "";
+
+  let combined = plainText;
+  if (html && typeof DOMParser !== "undefined") {
+    const fragment = new DOMParser().parseFromString(html, "text/html");
+    const destinations = linkDestinations(fragment);
+    if (destinations.length > 0) {
+      combined = [plainText, ...destinations].filter(Boolean).join("\n");
+    }
+  }
+
+  if (!combined) return [];
+  return extractInternalLinkAttachments(combined).map((link) => ({
+    kind: "internal_link",
+    ...link,
+  }));
 }

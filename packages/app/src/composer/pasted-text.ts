@@ -1,4 +1,7 @@
-import type { WeWorkMessageComposerAttachment } from "@/attachments/types";
+import type {
+  InternalLinkComposerAttachment,
+  WeWorkMessageComposerAttachment,
+} from "@/attachments/types";
 
 export interface WeWorkPasteCallbacks {
   onAddAttachment: (attachment: WeWorkMessageComposerAttachment) => void;
@@ -24,9 +27,8 @@ export function handleWeWorkClipboardPaste(
   return false;
 }
 
-export function pasteInternalLinkHintedText(
-  _input: HTMLElement,
+export function extractInternalLinksFromClipboard(
   _clipboard: Pick<DataTransfer, "getData"> | null,
-): boolean {
-  return false;
+): InternalLinkComposerAttachment[] {
+  return [];
 }

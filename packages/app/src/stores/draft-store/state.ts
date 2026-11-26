@@ -118,6 +118,16 @@ export const UserComposerAttachmentSchema: z.ZodType<UserComposerAttachment> = z
       subtitle: z.string(),
       text: z.string(),
     }),
+    z.strictObject({
+      kind: z.literal("internal_link"),
+      id: z.string().min(1),
+      provider: z.enum(["gongfeng", "tapd", "iwiki"]),
+      providerLabel: z.string().min(1),
+      title: z.string(),
+      subtitle: z.string(),
+      url: z.string().min(1),
+      text: z.string(),
+    }),
     PluginResourceComposerAttachmentSchema,
     z.strictObject({
       kind: z.literal("github_pr"),

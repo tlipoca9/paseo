@@ -84,6 +84,25 @@ export function splitComposerAttachmentsForSubmit(
       continue;
     }
 
+    if (attachment.kind === "internal_link") {
+      agentAttachments.push({
+        type: "text",
+        mimeType: "text/plain",
+        title: attachment.title,
+        text: attachment.text,
+        externalResource: {
+          provider: attachment.provider,
+          providerLabel: attachment.providerLabel,
+          resourceType: "link",
+          id: attachment.id,
+          identifier: attachment.subtitle,
+          title: attachment.title,
+          url: attachment.url,
+        },
+      });
+      continue;
+    }
+
     if (isWorkspaceAttachment(attachment)) {
       if (attachment.kind === "browser_element" && attachment.attachment.screenshot) {
         images.push(attachment.attachment.screenshot);

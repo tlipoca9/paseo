@@ -18,6 +18,7 @@ import {
   type MessageSubmissionRecord,
 } from "@/composer/submission/model";
 import {
+  addInternalLinkAttachments,
   uploadFileAttachments,
   cancelComposerAgent,
   dispatchComposerAgentMessage,
@@ -1122,4 +1123,66 @@ describe("file upload preparation", () => {
       expect(sends).toBe(0);
     },
   );
+});
+
+describe("internal link composer attachments", () => {
+  const gongfengAttachment = {
+    kind: "internal_link" as const,
+    id: "internal_link:gongfeng:https://git.woa.com/org/repo/-/merge_requests/12",
+    provider: "gongfeng" as const,
+    providerLabel: "工蜂",
+    title: "repo !12",
+    subtitle: "org/repo",
+    url: "https://git.woa.com/org/repo/-/merge_requests/12",
+    text: "https://git.woa.com/org/repo/-/merge_requests/12\n[工蜂链接，请优先使用 gongfeng MCP 读取详情]",
+  };
+
+  const iwikiAttachment = {
+    kind: "internal_link" as const,
+    id: "internal_link:iwiki:https://iwiki.woa.com/p/40123456",
+    provider: "iwiki" as const,
+    providerLabel: "iWiki",
+    title: "iWiki 文档 #40123456",
+    subtitle: "",
+    url: "https://iwiki.woa.com/p/40123456",
+    text: "https://iwiki.woa.com/p/40123456\n[iWiki 链接，请优先使用 iWiki MCP 读取详情]",
+  };
+
+  it("appends unique internal links and deduplicates by id and url", () => {
+    const initial: UserComposerAttachment[] = [];
+    const afterFirst = addInternalLinkAttachments(initial, [gongfengAttachment]);
+    expect(afterFirst).toEqual([gongfengAttachment]);
+
+    const afterDuplicateId = addInternalLinkAttachments(afterFirst, [gongfengAttachment]);
+    expect(afterDuplicateId).toBe(afterFirst);
+
+    const afterDuplicateUrl = addInternalLinkAttachments(afterFirst, [
+      { ...gongfengAttachment, id: "different-id" },
+      iwikiAttachment,
+      iwikiAttachment,
+    ]);
+    expect(afterDuplicateUrl).toEqual([gongfengAttachment, iwikiAttachment]);
+  });
+
+  it("opens internal link attachment preview when provided, otherwise falls back to external URL", () => {
+    const openInternalLinkAttachment = vi.fn();
+    const openExternalUrl = vi.fn();
+    openComposerAttachment({
+      attachment: gongfengAttachment,
+      setLightboxMetadata: vi.fn(),
+      openWorkspaceAttachment: vi.fn(() => false),
+      openExternalUrl,
+      openInternalLinkAttachment,
+    });
+    expect(openInternalLinkAttachment).toHaveBeenCalledWith(gongfengAttachment);
+    expect(openExternalUrl).not.toHaveBeenCalled();
+
+    openComposerAttachment({
+      attachment: gongfengAttachment,
+      setLightboxMetadata: vi.fn(),
+      openWorkspaceAttachment: vi.fn(() => false),
+      openExternalUrl,
+    });
+    expect(openExternalUrl).toHaveBeenCalledWith(gongfengAttachment.url);
+  });
 });

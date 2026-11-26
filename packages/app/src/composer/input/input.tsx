@@ -89,11 +89,14 @@ import { useComposerHeight } from "./height";
 import { ComposerInputPresentation } from "./presentation";
 import { resolveComposerInputMode, type ComposerInputMode } from "@/composer/input-mode";
 import {
+  extractInternalLinksFromClipboard,
   handleWeWorkClipboardPaste,
-  pasteInternalLinkHintedText,
   pasteLinkedClipboardText,
 } from "@/composer/pasted-text";
-import type { WeWorkMessageComposerAttachment } from "@/attachments/types";
+import type {
+  InternalLinkComposerAttachment,
+  WeWorkMessageComposerAttachment,
+} from "@/attachments/types";
 import type { NativePastedFile } from "@/composer/native-pasted-image";
 import {
   EditingTextInput,
@@ -183,6 +186,7 @@ export interface MessageInputProps {
     id: string,
     update: { title: string; subtitle: string; text: string },
   ) => void;
+  onAddInternalLinks?: (attachments: InternalLinkComposerAttachment[]) => void;
   onPasteImages?: (files: readonly NativePastedFile[]) => void;
   client: DaemonClient | null;
   /** Dictation start gate from host runtime (socket connected + directory ready). */
@@ -538,6 +542,7 @@ interface PasteEffectArgs {
   onUpdateWeWorkAttachment:
     | ((id: string, update: { title: string; subtitle: string; text: string }) => void)
     | undefined;
+  onAddInternalLinks: ((attachments: InternalLinkComposerAttachment[]) => void) | undefined;
 }
 
 function usePasteEffect(args: PasteEffectArgs): void {
@@ -550,6 +555,7 @@ function usePasteEffect(args: PasteEffectArgs): void {
     onAddImages,
     onAddWeWorkAttachment,
     onUpdateWeWorkAttachment,
+    onAddInternalLinks,
   } = args;
 
   useEffect(() => {
@@ -563,6 +569,12 @@ function usePasteEffect(args: PasteEffectArgs): void {
 
       const imageFiles = collectImageFilesFromClipboardData(event.clipboardData);
       if (imageFiles.length === 0) {
+        if (onAddInternalLinks) {
+          const internalLinks = extractInternalLinksFromClipboard(event.clipboardData);
+          if (internalLinks.length > 0) {
+            onAddInternalLinks(internalLinks);
+          }
+        }
         if (
           (onAddWeWorkAttachment &&
             onUpdateWeWorkAttachment &&
@@ -571,8 +583,7 @@ function usePasteEffect(args: PasteEffectArgs): void {
               onUpdateAttachment: onUpdateWeWorkAttachment,
               isDisposed: () => disposed,
             })) ||
-          pasteLinkedClipboardText(textarea, event.clipboardData) ||
-          pasteInternalLinkHintedText(textarea, event.clipboardData)
+          pasteLinkedClipboardText(textarea, event.clipboardData)
         ) {
           event.preventDefault();
         }
@@ -607,6 +618,7 @@ function usePasteEffect(args: PasteEffectArgs): void {
     onAddImages,
     onAddWeWorkAttachment,
     onUpdateWeWorkAttachment,
+    onAddInternalLinks,
   ]);
 }
 
@@ -1232,6 +1244,7 @@ interface ResolvedMessageInputProps {
   onUpdateWeWorkAttachment:
     | ((id: string, update: { title: string; subtitle: string; text: string }) => void)
     | undefined;
+  onAddInternalLinks: ((attachments: InternalLinkComposerAttachment[]) => void) | undefined;
   onPasteImages: ((files: readonly NativePastedFile[]) => void) | undefined;
   client: DaemonClient | null;
   isReadyForDictation: boolean | undefined;
@@ -1282,6 +1295,7 @@ function resolveMessageInputProps(props: MessageInputProps): ResolvedMessageInpu
     onAddImages: props.onAddImages,
     onAddWeWorkAttachment: props.onAddWeWorkAttachment,
     onUpdateWeWorkAttachment: props.onUpdateWeWorkAttachment,
+    onAddInternalLinks: props.onAddInternalLinks,
     onPasteImages: props.onPasteImages,
     client: props.client,
     isReadyForDictation: props.isReadyForDictation,
@@ -1366,6 +1380,7 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
       onAddImages,
       onAddWeWorkAttachment,
       onUpdateWeWorkAttachment,
+      onAddInternalLinks,
       onPasteImages,
       client,
       isReadyForDictation,
@@ -1921,6 +1936,7 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
       onAddImages,
       onAddWeWorkAttachment,
       onUpdateWeWorkAttachment,
+      onAddInternalLinks,
     });
 
     const handleSelectionChange = useCallback(

@@ -111,11 +111,25 @@ export interface WeWorkMessageComposerAttachment {
   text: string;
 }
 
+export type InternalLinkProvider = "gongfeng" | "tapd" | "iwiki";
+
+export interface InternalLinkComposerAttachment {
+  kind: "internal_link";
+  id: string;
+  provider: InternalLinkProvider;
+  providerLabel: string;
+  title: string;
+  subtitle: string;
+  url: string;
+  text: string;
+}
+
 export type UserComposerAttachment =
   | { kind: "image"; metadata: AttachmentMetadata }
   | { kind: "file"; attachment: UploadedFileAttachment }
   | WorkspaceFileComposerAttachment
   | WeWorkMessageComposerAttachment
+  | InternalLinkComposerAttachment
   | PluginResourceComposerAttachment
   | { kind: "forge_issue"; item: ForgeSearchItem }
   | { kind: "forge_change_request"; item: ForgeSearchItem }

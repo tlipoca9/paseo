@@ -89,6 +89,7 @@ import type { DraftCommandTarget } from "@/agent-commands";
 import { encodeImages } from "@/utils/encode-images";
 import { focusWithRetries } from "@/utils/web-focus";
 import {
+  addInternalLinkAttachments,
   cancelComposerAgent,
   dispatchComposerAgentMessage,
   editQueuedComposerMessage,
@@ -152,6 +153,7 @@ import type { AgentMetric } from "@getpaseo/protocol/agent-types";
 import type {
   AttachmentMetadata,
   ComposerAttachment,
+  InternalLinkComposerAttachment,
   UserComposerAttachment,
   WeWorkMessageComposerAttachment,
   WorkspaceFileComposerAttachment,
@@ -514,6 +516,19 @@ function renderComposerAttachmentPill(args: RenderComposerAttachmentPillArgs): R
     return (
       <WeWorkMessageAttachmentPill
         key={`wework:${attachment.id}`}
+        attachment={attachment}
+        index={index}
+        disabled={disabled}
+        onOpen={onOpen}
+        onRemove={onRemove}
+        removeLabel={labels.removeFile}
+      />
+    );
+  }
+  if (attachment.kind === "internal_link") {
+    return (
+      <InternalLinkAttachmentPill
+        key={`internal-link:${attachment.id}`}
         attachment={attachment}
         index={index}
         disabled={disabled}
@@ -960,6 +975,56 @@ function WeWorkMessageAttachmentPill({
     >
       <AttachmentLabel
         icon={weworkMessagePillIcon}
+        title={attachment.title}
+        subtitle={subtitle}
+      />
+    </AttachmentPill>
+  );
+}
+
+interface InternalLinkAttachmentPillProps {
+  attachment: InternalLinkComposerAttachment;
+  index: number;
+  disabled: boolean;
+  onOpen: (attachment: ComposerAttachment) => void;
+  onRemove: (index: number) => void;
+  removeLabel: string;
+}
+
+function getInternalLinkPillIcon(provider: InternalLinkComposerAttachment["provider"]): ReactElement {
+  if (provider === "gongfeng") return githubPrPillIcon;
+  if (provider === "tapd") return githubIssuePillIcon;
+  return filePillIcon;
+}
+
+function InternalLinkAttachmentPill({
+  attachment,
+  index,
+  disabled,
+  onOpen,
+  onRemove,
+  removeLabel,
+}: InternalLinkAttachmentPillProps) {
+  const handleOpen = useCallback(() => {
+    onOpen(attachment);
+  }, [attachment, onOpen]);
+  const handleRemove = useCallback(() => {
+    onRemove(index);
+  }, [index, onRemove]);
+  const subtitle = attachment.subtitle
+    ? `${attachment.providerLabel} · ${attachment.subtitle}`
+    : attachment.providerLabel;
+  return (
+    <AttachmentPill
+      testID="composer-internal-link-attachment-pill"
+      onOpen={handleOpen}
+      onRemove={handleRemove}
+      openAccessibilityLabel={attachment.title}
+      removeAccessibilityLabel={removeLabel}
+      disabled={disabled}
+    >
+      <AttachmentLabel
+        icon={getInternalLinkPillIcon(attachment.provider)}
         title={attachment.title}
         subtitle={subtitle}
       />
@@ -1737,6 +1802,19 @@ function ComposerContentImpl({
     setInspectedWeWorkAttachment(null);
   }, []);
 
+  const addInternalLinks = useCallback(
+    (links: InternalLinkComposerAttachment[]) => {
+      setSelectedAttachments((prev) => addInternalLinkAttachments(prev, links));
+    },
+    [setSelectedAttachments],
+  );
+
+  const [inspectedInternalLinkAttachment, setInspectedInternalLinkAttachment] =
+    useState<InternalLinkComposerAttachment | null>(null);
+  const handleCloseInternalLinkPreview = useCallback(() => {
+    setInspectedInternalLinkAttachment(null);
+  }, []);
+
   const focusInput = useCallback(() => {
     if (isNative) return;
     focusWithRetries({
@@ -2115,6 +2193,7 @@ function ComposerContentImpl({
         setLightboxMetadata,
         openWorkspaceAttachment: openAttachment,
         openWeWorkAttachment: setInspectedWeWorkAttachment,
+        openInternalLinkAttachment: setInspectedInternalLinkAttachment,
         openExternalUrl: (url) => {
           void openExternalUrl(url);
         },
@@ -2698,6 +2777,39 @@ function ComposerContentImpl({
             </Text>
           ) : null}
         </AdaptiveModalSheet>
+        <AdaptiveModalSheet
+          visible={inspectedInternalLinkAttachment !== null}
+          onClose={handleCloseInternalLinkPreview}
+          testID="composer-internal-link-preview-modal"
+          header={
+            inspectedInternalLinkAttachment
+              ? {
+                  title: inspectedInternalLinkAttachment.title,
+                  subtitle: inspectedInternalLinkAttachment.subtitle
+                    ? `${inspectedInternalLinkAttachment.providerLabel} · ${inspectedInternalLinkAttachment.subtitle}`
+                    : inspectedInternalLinkAttachment.providerLabel,
+                }
+              : undefined
+          }
+        >
+          {inspectedInternalLinkAttachment ? (
+            <View style={styles.internalLinkPreviewBody}>
+              <Pressable
+                onPress={() => {
+                  void openExternalUrl(inspectedInternalLinkAttachment.url);
+                }}
+                accessibilityRole="link"
+              >
+                <Text selectable style={styles.internalLinkPreviewUrl}>
+                  {inspectedInternalLinkAttachment.url}
+                </Text>
+              </Pressable>
+              <Text selectable style={styles.weworkPreviewText}>
+                {inspectedInternalLinkAttachment.text}
+              </Text>
+            </View>
+          ) : null}
+        </AdaptiveModalSheet>
         {/* Input area */}
         <View
           style={inputAreaContainerStyle}
@@ -2748,6 +2860,7 @@ function ComposerContentImpl({
                   onAddImages={addImages}
                   onAddWeWorkAttachment={addWeWorkAttachment}
                   onUpdateWeWorkAttachment={updateWeWorkAttachment}
+                  onAddInternalLinks={addInternalLinks}
                   onPasteImages={handleNativePasteImages}
                   client={client}
                   isReadyForDictation={isDictationReady}
@@ -2966,6 +3079,15 @@ const styles = StyleSheet.create((theme: Theme) => ({
     color: theme.colors.foreground,
     fontSize: theme.fontSize.sm,
     lineHeight: 20,
+  },
+  internalLinkPreviewBody: {
+    gap: theme.spacing[2],
+  },
+  internalLinkPreviewUrl: {
+    color: theme.colors.accent,
+    fontSize: theme.fontSize.sm,
+    lineHeight: 20,
+    textDecorationLine: "underline",
   },
 })) as unknown as Record<string, object>;
 

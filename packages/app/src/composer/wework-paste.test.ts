@@ -3,7 +3,10 @@ import type { WeWorkMessageComposerAttachment } from "@/attachments/types";
 import type { DesktopHostBridge, ResolvedWeWorkPaste, WeWorkClipboardData } from "@/desktop/host";
 import { openComposerAttachment } from "@/composer/actions";
 import { splitComposerAttachmentsForSubmit } from "@/composer/attachments/submit";
-import { handleWeWorkClipboardPaste } from "@/composer/pasted-text.web";
+import {
+  extractInternalLinksFromClipboard,
+  handleWeWorkClipboardPaste,
+} from "@/composer/pasted-text.web";
 import { isUserComposerAttachment } from "@/stores/draft-store/state";
 
 function setDesktopBridge(bridge: DesktopHostBridge | undefined): void {
@@ -174,6 +177,69 @@ describe("WeWork Smart Paste attachment card", () => {
           identifier: "发布群 · 张三 · 2024-11-25 16:00",
           title: "今晚 8 点发布 v0.18",
           url: "",
+        },
+      },
+    ]);
+  });
+
+  it("extracts internal dev link cards from clipboard text without mutating pasted text and submits via externalResource", () => {
+    const clipboard = makeClipboard(
+      "麻烦看下 MR https://git.woa.com/org/sandstorm/-/merge_requests/88 和文档 https://iwiki.woa.com/p/40123456。",
+    );
+    const links = extractInternalLinksFromClipboard(clipboard);
+    expect(links).toHaveLength(2);
+    expect(links[0]).toMatchObject({
+      kind: "internal_link",
+      provider: "gongfeng",
+      providerLabel: "工蜂",
+      title: "sandstorm !88",
+      subtitle: "org/sandstorm",
+      url: "https://git.woa.com/org/sandstorm/-/merge_requests/88",
+    });
+    expect(links[1]).toMatchObject({
+      kind: "internal_link",
+      provider: "iwiki",
+      providerLabel: "iWiki",
+      title: "iWiki 文档 #40123456",
+      subtitle: "",
+      url: "https://iwiki.woa.com/p/40123456",
+    });
+
+    for (const link of links) {
+      expect(isUserComposerAttachment(link)).toBe(true);
+    }
+
+    const submitted = splitComposerAttachmentsForSubmit(links);
+    expect(submitted.images).toEqual([]);
+    expect(submitted.attachments).toEqual([
+      {
+        type: "text",
+        mimeType: "text/plain",
+        title: "sandstorm !88",
+        text: "https://git.woa.com/org/sandstorm/-/merge_requests/88\n[工蜂链接，请优先使用 gongfeng MCP 读取详情]",
+        externalResource: {
+          provider: "gongfeng",
+          providerLabel: "工蜂",
+          resourceType: "link",
+          id: "internal_link:gongfeng:https://git.woa.com/org/sandstorm/-/merge_requests/88",
+          identifier: "org/sandstorm",
+          title: "sandstorm !88",
+          url: "https://git.woa.com/org/sandstorm/-/merge_requests/88",
+        },
+      },
+      {
+        type: "text",
+        mimeType: "text/plain",
+        title: "iWiki 文档 #40123456",
+        text: "https://iwiki.woa.com/p/40123456\n[iWiki 链接，请优先使用 iWiki MCP 读取详情]",
+        externalResource: {
+          provider: "iwiki",
+          providerLabel: "iWiki",
+          resourceType: "link",
+          id: "internal_link:iwiki:https://iwiki.woa.com/p/40123456",
+          identifier: "",
+          title: "iWiki 文档 #40123456",
+          url: "https://iwiki.woa.com/p/40123456",
         },
       },
     ]);

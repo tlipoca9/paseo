@@ -194,4 +194,29 @@ describe("draft-store normalization", () => {
       attachments: [pickerAttachment],
     });
   });
+
+  it("preserves internal link attachments when hydrating a draft", () => {
+    const internalLinkAttachment = {
+      kind: "internal_link" as const,
+      id: "internal_link:gongfeng:https://git.woa.com/org/repo/-/merge_requests/123",
+      provider: "gongfeng" as const,
+      providerLabel: "工蜂",
+      title: "repo !123",
+      subtitle: "org/repo",
+      url: "https://git.woa.com/org/repo/-/merge_requests/123",
+      text: "https://git.woa.com/org/repo/-/merge_requests/123\n[工蜂链接，请优先使用 gongfeng MCP 读取详情]",
+    };
+
+    expect(
+      toDraftInputIfReady({
+        input: { text: "请 review 这个 MR", attachments: [internalLinkAttachment] },
+        lifecycle: "active",
+        updatedAt: 1,
+        version: 1,
+      }),
+    ).toEqual({
+      text: "请 review 这个 MR",
+      attachments: [internalLinkAttachment],
+    });
+  });
 });

@@ -5,6 +5,7 @@ import type { ActiveTurnBehavior } from "@getpaseo/protocol/messages";
 import type {
   AttachmentMetadata,
   ComposerAttachment,
+  InternalLinkComposerAttachment,
   UserComposerAttachment,
 } from "@/attachments/types";
 import {
@@ -344,6 +345,9 @@ export interface OpenComposerAttachmentInput {
   openWeWorkAttachment?: (
     attachment: Extract<ComposerAttachment, { kind: "wework_message" }>,
   ) => void;
+  openInternalLinkAttachment?: (
+    attachment: Extract<ComposerAttachment, { kind: "internal_link" }>,
+  ) => void;
 }
 
 export function openComposerAttachment(input: OpenComposerAttachmentInput): void {
@@ -358,11 +362,44 @@ export function openComposerAttachment(input: OpenComposerAttachmentInput): void
     input.openWeWorkAttachment?.(input.attachment);
     return;
   }
+  if (input.attachment.kind === "internal_link") {
+    if (input.openInternalLinkAttachment) {
+      input.openInternalLinkAttachment(input.attachment);
+    } else {
+      input.openExternalUrl(input.attachment.url);
+    }
+    return;
+  }
   if (isWorkspaceAttachment(input.attachment)) {
     input.openWorkspaceAttachment({ attachment: input.attachment });
     return;
   }
   input.openExternalUrl(input.attachment.item.url);
+}
+
+export function addInternalLinkAttachments(
+  current: UserComposerAttachment[],
+  incoming: readonly InternalLinkComposerAttachment[],
+): UserComposerAttachment[] {
+  if (incoming.length === 0) return current;
+  const existingIds = new Set<string>();
+  const existingUrls = new Set<string>();
+  for (const attachment of current) {
+    if (attachment.kind === "internal_link") {
+      existingIds.add(attachment.id);
+      existingUrls.add(attachment.url);
+    }
+  }
+  const toAdd: InternalLinkComposerAttachment[] = [];
+  for (const attachment of incoming) {
+    if (existingIds.has(attachment.id) || existingUrls.has(attachment.url)) {
+      continue;
+    }
+    existingIds.add(attachment.id);
+    existingUrls.add(attachment.url);
+    toAdd.push(attachment);
+  }
+  return toAdd.length === 0 ? current : [...current, ...toAdd];
 }
 
 export function buildForgeAttachment(item: ForgeSearchItem): UserComposerAttachment {
