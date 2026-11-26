@@ -25,10 +25,12 @@ import {
   editQueuedComposerMessage,
   findForgeItemByOption,
   isAttachmentSelectedForForgeItem,
+  moveQueuedComposerMessage,
   openComposerAttachment,
   pickAndPersistImages,
   queueComposerMessage,
   removeComposerAttachmentAtIndex,
+  removeQueuedComposerMessage,
   sendQueuedComposerMessageNow,
   toggleForgeAttachment,
   toggleForgeAttachmentFromPicker,
@@ -788,6 +790,49 @@ describe("editQueuedComposerMessage", () => {
       attachments: [{ kind: "image", metadata: image }],
     });
     expect(queue.state.get("agent")).toEqual([]);
+  });
+});
+
+describe("moveQueuedComposerMessage & removeQueuedComposerMessage", () => {
+  it("reorders queued messages up and down and respects boundaries", () => {
+    const queue = createFakeQueue(
+      new Map([
+        [
+          "agent",
+          [
+            { id: "m1", text: "first", attachments: [] },
+            { id: "m2", text: "second", attachments: [] },
+            { id: "m3", text: "third", attachments: [] },
+          ],
+        ],
+      ]),
+    );
+
+    expect(moveQueuedComposerMessage({ agentId: "agent", messageId: "m1", direction: "up", queue })).toBe(false);
+    expect(moveQueuedComposerMessage({ agentId: "agent", messageId: "m2", direction: "up", queue })).toBe(true);
+    expect(queue.state.get("agent")?.map((m) => m.id)).toEqual(["m2", "m1", "m3"]);
+
+    expect(moveQueuedComposerMessage({ agentId: "agent", messageId: "m1", direction: "down", queue })).toBe(true);
+    expect(queue.state.get("agent")?.map((m) => m.id)).toEqual(["m2", "m3", "m1"]);
+    expect(moveQueuedComposerMessage({ agentId: "agent", messageId: "m1", direction: "down", queue })).toBe(false);
+  });
+
+  it("removes a queued message by id", () => {
+    const queue = createFakeQueue(
+      new Map([
+        [
+          "agent",
+          [
+            { id: "m1", text: "first", attachments: [] },
+            { id: "m2", text: "second", attachments: [] },
+          ],
+        ],
+      ]),
+    );
+
+    expect(removeQueuedComposerMessage({ agentId: "agent", messageId: "missing", queue })).toBe(false);
+    expect(removeQueuedComposerMessage({ agentId: "agent", messageId: "m1", queue })).toBe(true);
+    expect(queue.state.get("agent")?.map((m) => m.id)).toEqual(["m2"]);
   });
 });
 

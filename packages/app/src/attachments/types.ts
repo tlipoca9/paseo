@@ -124,12 +124,23 @@ export interface InternalLinkComposerAttachment {
   text: string;
 }
 
+export interface SessionRefComposerAttachment {
+  kind: "session_ref";
+  id: string;
+  title: string;
+  subtitle: string;
+  workspaceId?: string;
+  agentId?: string;
+  text: string;
+}
+
 export type UserComposerAttachment =
   | { kind: "image"; metadata: AttachmentMetadata }
   | { kind: "file"; attachment: UploadedFileAttachment }
   | WorkspaceFileComposerAttachment
   | WeWorkMessageComposerAttachment
   | InternalLinkComposerAttachment
+  | SessionRefComposerAttachment
   | PluginResourceComposerAttachment
   | { kind: "forge_issue"; item: ForgeSearchItem }
   | { kind: "forge_change_request"; item: ForgeSearchItem }

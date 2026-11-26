@@ -2,11 +2,13 @@ import TurndownService from "turndown";
 import { tables } from "turndown-plugin-gfm";
 import type {
   InternalLinkComposerAttachment,
+  SessionRefComposerAttachment,
   WeWorkMessageComposerAttachment,
 } from "@/attachments/types";
 import { getDesktopHost, type WeWorkClipboardData } from "@/desktop/host";
 import { createAssistantMarkdownParser } from "@/utils/assistant-markdown-parser";
 import { extractInternalLinkAttachments } from "./internal-link-hints";
+import { parseSessionRefPaste } from "./session-ref-paste";
 
 export interface WeWorkPasteCallbacks {
   onAddAttachment: (attachment: WeWorkMessageComposerAttachment) => void;
@@ -153,8 +155,29 @@ export function handleWeWorkClipboardPaste(
 }
 
 /**
+ * Handle pasted `[Paseo 会话引用]` text blocks by converting them into a native
+ * `session_ref` attachment card. Returns `true` when the entire paste was the
+ * session reference block (so default raw text insertion can be prevented).
+ */
+export function handleSessionRefClipboardPaste(
+  clipboard: Pick<DataTransfer, "getData"> | null,
+  onAddSessionRef: (attachment: SessionRefComposerAttachment) => void,
+): boolean {
+  if (!clipboard) return false;
+  const plainText = clipboard.getData("text/plain") ?? "";
+  if (!plainText) return false;
+
+  const parsed = parseSessionRefPaste(plainText);
+  if (!parsed) return false;
+
+  onAddSessionRef(parsed.attachment);
+  return parsed.isExactMatch;
+}
+
+/**
  * Extract internal dev links (Gongfeng / TAPD / iWiki) from clipboard plain
  * text and HTML link destinations without mutating or blocking the paste.
+ * Also captures descriptive `<a href="...">title</a>` anchor text when present.
  */
 export function extractInternalLinksFromClipboard(
   clipboard: Pick<DataTransfer, "getData"> | null,
@@ -164,16 +187,34 @@ export function extractInternalLinksFromClipboard(
   const html = clipboard.getData("text/html") ?? "";
 
   let combined = plainText;
+  const titlesByUrl = new Map<string, string>();
   if (html && typeof DOMParser !== "undefined") {
     const fragment = new DOMParser().parseFromString(html, "text/html");
-    const destinations = linkDestinations(fragment);
+    const anchors = Array.from(fragment.querySelectorAll("a[href]"));
+    const destinations: string[] = [];
+    for (const anchor of anchors) {
+      const href = anchor.getAttribute("href");
+      if (!href) continue;
+      destinations.push(href);
+      const label = anchor.textContent?.replace(/\s+/g, " ").trim();
+      if (label) {
+        try {
+          const normalized = new URL(href).href.replace(/\/+$/, "");
+          if (!titlesByUrl.has(normalized)) {
+            titlesByUrl.set(normalized, label);
+          }
+        } catch {
+          // Ignore invalid hrefs.
+        }
+      }
+    }
     if (destinations.length > 0) {
       combined = [plainText, ...destinations].filter(Boolean).join("\n");
     }
   }
 
   if (!combined) return [];
-  return extractInternalLinkAttachments(combined).map((link) => ({
+  return extractInternalLinkAttachments(combined, { titlesByUrl }).map((link) => ({
     kind: "internal_link",
     ...link,
   }));

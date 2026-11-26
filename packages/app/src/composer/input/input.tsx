@@ -49,7 +49,7 @@ import {
   composerToolbarOverhang,
   resolveComposerLeadingEdge,
 } from "@/composer/input/toolbar-rails";
-import { ArrowUp, Mic, MicOff, CornerDownLeft, Plus, Square } from "lucide-react-native";
+import { ArrowUp, ListPlus, Mic, MicOff, CornerDownLeft, Plus, Square } from "lucide-react-native";
 import * as Haptics from "expo-haptics";
 import { useDictation } from "@/hooks/use-dictation";
 import { hasFinePointer } from "@/hooks/pointer-capabilities";
@@ -90,6 +90,7 @@ import { ComposerInputPresentation } from "./presentation";
 import { resolveComposerInputMode, type ComposerInputMode } from "@/composer/input-mode";
 import {
   extractInternalLinksFromClipboard,
+  handleSessionRefClipboardPaste,
   handleWeWorkClipboardPaste,
   pasteLinkedClipboardText,
 } from "@/composer/pasted-text";
@@ -187,6 +188,7 @@ export interface MessageInputProps {
     update: { title: string; subtitle: string; text: string },
   ) => void;
   onAddInternalLinks?: (attachments: InternalLinkComposerAttachment[]) => void;
+  onAddSessionRef?: (attachment: import("@/attachments/types").SessionRefComposerAttachment) => void;
   onPasteImages?: (files: readonly NativePastedFile[]) => void;
   client: DaemonClient | null;
   /** Dictation start gate from host runtime (socket connected + directory ready). */
@@ -543,6 +545,9 @@ interface PasteEffectArgs {
     | ((id: string, update: { title: string; subtitle: string; text: string }) => void)
     | undefined;
   onAddInternalLinks: ((attachments: InternalLinkComposerAttachment[]) => void) | undefined;
+  onAddSessionRef:
+    | ((attachment: import("@/attachments/types").SessionRefComposerAttachment) => void)
+    | undefined;
 }
 
 function usePasteEffect(args: PasteEffectArgs): void {
@@ -556,6 +561,7 @@ function usePasteEffect(args: PasteEffectArgs): void {
     onAddWeWorkAttachment,
     onUpdateWeWorkAttachment,
     onAddInternalLinks,
+    onAddSessionRef,
   } = args;
 
   useEffect(() => {
@@ -569,6 +575,13 @@ function usePasteEffect(args: PasteEffectArgs): void {
 
       const imageFiles = collectImageFilesFromClipboardData(event.clipboardData);
       if (imageFiles.length === 0) {
+        if (
+          onAddSessionRef &&
+          handleSessionRefClipboardPaste(event.clipboardData, onAddSessionRef)
+        ) {
+          event.preventDefault();
+          return;
+        }
         if (onAddInternalLinks) {
           const internalLinks = extractInternalLinksFromClipboard(event.clipboardData);
           if (internalLinks.length > 0) {
@@ -619,6 +632,7 @@ function usePasteEffect(args: PasteEffectArgs): void {
     onAddWeWorkAttachment,
     onUpdateWeWorkAttachment,
     onAddInternalLinks,
+    onAddSessionRef,
   ]);
 }
 
@@ -986,19 +1000,48 @@ function resolvePrimaryActionKind(input: {
   return input.offersVoiceMode ? "voiceMode" : "none";
 }
 
+const ThemedListPlus = withUnistyles(ListPlus);
+
 function PrimaryAction({
   kind,
   activeActionContent,
   voiceModeContent,
+  showQueueButton,
+  onQueuePress,
   ...sendButtonProps
 }: {
   kind: PrimaryActionKind;
   activeActionContent: React.ReactNode;
   voiceModeContent: React.ReactNode;
+  showQueueButton?: boolean;
+  onQueuePress?: () => void;
 } & React.ComponentProps<typeof SendButtonTooltip>) {
   if (kind === "active") return activeActionContent;
   if (kind === "voiceMode") return voiceModeContent;
-  if (kind === "send") return <SendButtonTooltip {...sendButtonProps} />;
+  if (kind === "send") {
+    return (
+      <View style={styles.primaryActionGroup}>
+        {showQueueButton && onQueuePress ? (
+          <Tooltip delayDuration={0} enabledOnDesktop enabledOnMobile={false}>
+            <TooltipTrigger
+              onPress={onQueuePress}
+              disabled={sendButtonProps.isSendButtonDisabled}
+              accessibilityLabel="加入队列"
+              accessibilityRole="button"
+              testID="composer-queue-button"
+              style={styles.queueSecondaryButton}
+            >
+              <ThemedListPlus size={15} uniProps={iconForegroundMutedMapping} />
+            </TooltipTrigger>
+            <TooltipContent side="top" align="center" offset={8}>
+              <Text style={styles.queueTooltipText}>加入队列 (⌘↵)</Text>
+            </TooltipContent>
+          </Tooltip>
+        ) : null}
+        <SendButtonTooltip {...sendButtonProps} />
+      </View>
+    );
+  }
   return null;
 }
 interface ToggleRealtimeVoiceContext {
@@ -1245,6 +1288,9 @@ interface ResolvedMessageInputProps {
     | ((id: string, update: { title: string; subtitle: string; text: string }) => void)
     | undefined;
   onAddInternalLinks: ((attachments: InternalLinkComposerAttachment[]) => void) | undefined;
+  onAddSessionRef:
+    | ((attachment: import("@/attachments/types").SessionRefComposerAttachment) => void)
+    | undefined;
   onPasteImages: ((files: readonly NativePastedFile[]) => void) | undefined;
   client: DaemonClient | null;
   isReadyForDictation: boolean | undefined;
@@ -1296,6 +1342,7 @@ function resolveMessageInputProps(props: MessageInputProps): ResolvedMessageInpu
     onAddWeWorkAttachment: props.onAddWeWorkAttachment,
     onUpdateWeWorkAttachment: props.onUpdateWeWorkAttachment,
     onAddInternalLinks: props.onAddInternalLinks,
+    onAddSessionRef: props.onAddSessionRef,
     onPasteImages: props.onPasteImages,
     client: props.client,
     isReadyForDictation: props.isReadyForDictation,
@@ -1381,6 +1428,7 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
       onAddWeWorkAttachment,
       onUpdateWeWorkAttachment,
       onAddInternalLinks,
+      onAddSessionRef,
       onPasteImages,
       client,
       isReadyForDictation,
@@ -1937,6 +1985,7 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
       onAddWeWorkAttachment,
       onUpdateWeWorkAttachment,
       onAddInternalLinks,
+      onAddSessionRef,
     });
 
     const handleSelectionChange = useCallback(
@@ -2181,12 +2230,21 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
       [isDictating, isRealtimeVoiceForCurrentAgent, voice?.isMuted, toolbarGlyph, discGlyphSize],
     );
 
+    const showQueueButton =
+      isAgentRunning &&
+      defaultSendBehavior !== "queue" &&
+      typeof onQueue === "function" &&
+      !isSubmitLoading &&
+      !isPresentedSendDisabled;
+
     const sendButton = useMemo(
       () => (
         <PrimaryAction
           kind={presentedActionKind}
           activeActionContent={activeActionContent}
           voiceModeContent={voiceModeContent}
+          showQueueButton={showQueueButton}
+          onQueuePress={handleQueueMessage}
           shouldShow
           canPressLoadingButton={canPressLoadingButton}
           onSubmitLoadingPress={onSubmitLoadingPress}
@@ -2209,6 +2267,8 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
         presentedActionKind,
         activeActionContent,
         voiceModeContent,
+        showQueueButton,
+        handleQueueMessage,
         canPressLoadingButton,
         onSubmitLoadingPress,
         handleDefaultSendAction,
@@ -2673,6 +2733,25 @@ const styles = StyleSheet.create((theme: Theme) => ({
   },
   tooltipText: {
     fontSize: theme.fontSize.base,
+    color: theme.colors.popoverForeground,
+  },
+  primaryActionGroup: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: theme.spacing[1],
+  },
+  queueSecondaryButton: {
+    width: 28,
+    height: 28,
+    borderRadius: theme.borderRadius.full,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: theme.colors.surface2,
+    borderWidth: theme.borderWidth[1],
+    borderColor: theme.colors.border,
+  },
+  queueTooltipText: {
+    fontSize: theme.fontSize.sm,
     color: theme.colors.popoverForeground,
   },
   buttonDisabled: {

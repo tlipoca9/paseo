@@ -292,6 +292,58 @@ export function editQueuedComposerMessage(
   };
 }
 
+export interface MoveQueuedComposerMessageInput {
+  agentId: string;
+  messageId: string;
+  direction: "up" | "down";
+  queue: QueueWriter;
+}
+
+export function moveQueuedComposerMessage(input: MoveQueuedComposerMessageInput): boolean {
+  const current = input.queue.read(input.agentId);
+  const index = current.findIndex((q) => q.id === input.messageId);
+  if (index === -1) return false;
+  const targetIndex = input.direction === "up" ? index - 1 : index + 1;
+  if (targetIndex < 0 || targetIndex >= current.length) return false;
+
+  input.queue.write((prev) => {
+    const list = prev.get(input.agentId);
+    if (!list) return prev;
+    const idx = list.findIndex((q) => q.id === input.messageId);
+    const nextIdx = input.direction === "up" ? idx - 1 : idx + 1;
+    if (idx === -1 || nextIdx < 0 || nextIdx >= list.length) return prev;
+    const reordered = [...list];
+    const [moved] = reordered.splice(idx, 1);
+    reordered.splice(nextIdx, 0, moved!);
+    const next = new Map(prev);
+    next.set(input.agentId, reordered);
+    return next;
+  });
+  return true;
+}
+
+export interface RemoveQueuedComposerMessageInput {
+  agentId: string;
+  messageId: string;
+  queue: QueueWriter;
+}
+
+export function removeQueuedComposerMessage(input: RemoveQueuedComposerMessageInput): boolean {
+  const exists = input.queue.read(input.agentId).some((q) => q.id === input.messageId);
+  if (!exists) return false;
+  input.queue.write((prev) => {
+    const list = prev.get(input.agentId);
+    if (!list) return prev;
+    const next = new Map(prev);
+    next.set(
+      input.agentId,
+      list.filter((q) => q.id !== input.messageId),
+    );
+    return next;
+  });
+  return true;
+}
+
 export interface SendQueuedComposerMessageNowInput {
   agentId: string;
   messageId: string;
@@ -348,6 +400,9 @@ export interface OpenComposerAttachmentInput {
   openInternalLinkAttachment?: (
     attachment: Extract<ComposerAttachment, { kind: "internal_link" }>,
   ) => void;
+  openSessionRefAttachment?: (
+    attachment: Extract<ComposerAttachment, { kind: "session_ref" }>,
+  ) => void;
 }
 
 export function openComposerAttachment(input: OpenComposerAttachmentInput): void {
@@ -370,11 +425,30 @@ export function openComposerAttachment(input: OpenComposerAttachmentInput): void
     }
     return;
   }
+  if (input.attachment.kind === "session_ref") {
+    input.openSessionRefAttachment?.(input.attachment);
+    return;
+  }
   if (isWorkspaceAttachment(input.attachment)) {
     input.openWorkspaceAttachment({ attachment: input.attachment });
     return;
   }
   input.openExternalUrl(input.attachment.item.url);
+}
+
+export function addSessionRefAttachment(
+  current: UserComposerAttachment[],
+  incoming: Extract<UserComposerAttachment, { kind: "session_ref" }>,
+): UserComposerAttachment[] {
+  const existingIdx = current.findIndex(
+    (attachment) => attachment.kind === "session_ref" && attachment.id === incoming.id,
+  );
+  if (existingIdx !== -1) {
+    const next = [...current];
+    next[existingIdx] = incoming;
+    return next;
+  }
+  return [...current, incoming];
 }
 
 export function addInternalLinkAttachments(

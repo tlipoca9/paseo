@@ -150,12 +150,37 @@ function parseIwikiLink(parsed: URL, url: string): ExtractedInternalLink {
   };
 }
 
+export interface ExtractInternalLinksOptions {
+  /** Optional map of normalized URL -> descriptive anchor text from clipboard HTML. */
+  titlesByUrl?: ReadonlyMap<string, string>;
+}
+
+function applyDescriptiveTitle(
+  link: ExtractedInternalLink,
+  titlesByUrl?: ReadonlyMap<string, string>,
+): ExtractedInternalLink {
+  if (!titlesByUrl) return link;
+  const candidate = titlesByUrl.get(link.url)?.trim();
+  if (!candidate || candidate.length < 2) return link;
+  // Ignore raw URLs or identical fallback titles.
+  if (/^https?:\/\//i.test(candidate) || candidate === link.title) return link;
+  const subtitle = link.subtitle ? `${link.title} · ${link.subtitle}` : link.title;
+  return {
+    ...link,
+    title: candidate.length > 64 ? `${candidate.slice(0, 61)}…` : candidate,
+    subtitle,
+  };
+}
+
 /**
  * Pure 0ms local extractor for internal dev links (Gongfeng, TAPD, iWiki).
  * Deduplicates by normalized URL and produces deterministic IDs so pasting
  * the same link multiple times does not create duplicate attachment cards.
  */
-export function extractInternalLinkAttachments(text: string): ExtractedInternalLink[] {
+export function extractInternalLinkAttachments(
+  text: string,
+  options?: ExtractInternalLinksOptions,
+): ExtractedInternalLink[] {
   if (!text) return [];
 
   const matches = text.match(INTERNAL_LINK_URL_REGEX);
@@ -182,13 +207,13 @@ export function extractInternalLinkAttachments(text: string): ExtractedInternalL
     if (seen.has(url)) continue;
     seen.add(url);
 
-    if (provider === "gongfeng") {
-      results.push(parseGongfengLink(parsed, url));
-    } else if (provider === "tapd") {
-      results.push(parseTapdLink(parsed, url));
-    } else {
-      results.push(parseIwikiLink(parsed, url));
-    }
+    const parsedLink =
+      provider === "gongfeng"
+        ? parseGongfengLink(parsed, url)
+        : provider === "tapd"
+          ? parseTapdLink(parsed, url)
+          : parseIwikiLink(parsed, url);
+    results.push(applyDescriptiveTitle(parsedLink, options?.titlesByUrl));
   }
 
   return results;

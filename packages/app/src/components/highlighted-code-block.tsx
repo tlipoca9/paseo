@@ -9,7 +9,7 @@ import {
 } from "react-native";
 import { StyleSheet } from "react-native-unistyles";
 import * as Clipboard from "expo-clipboard";
-import { Check, Copy } from "lucide-react-native";
+import { Check, ChevronDown, ChevronUp, Copy } from "lucide-react-native";
 import { useTranslation } from "react-i18next";
 import type { HighlightToken } from "@getpaseo/highlight";
 import { isNative, isWeb } from "@/constants/platform";
@@ -57,6 +57,9 @@ function fenceLanguageToExtension(info: string | null | undefined): string | nul
   return LANGUAGE_ALIASES[normalized] ?? normalized;
 }
 
+const COLLAPSE_LINE_THRESHOLD = 24;
+const COLLAPSED_PREVIEW_LINES = 16;
+
 function stripTerminalFenceNewline(code: string): string {
   return code.endsWith("\n") ? code.slice(0, -1) : code;
 }
@@ -85,6 +88,30 @@ export const HighlightedCodeBlock = React.memo(function HighlightedCodeBlock({
     [renderedCode, language],
   );
 
+  const lineCount = useMemo(
+    () => (keyedLines ? keyedLines.length : renderedCode.split("\n").length),
+    [keyedLines, renderedCode],
+  );
+  const isCollapsible = lineCount > COLLAPSE_LINE_THRESHOLD;
+  const [expanded, setExpanded] = useState(false);
+  const isCollapsed = isCollapsible && !expanded;
+
+  const displayedKeyedLines = useMemo(
+    () => (keyedLines && isCollapsed ? keyedLines.slice(0, COLLAPSED_PREVIEW_LINES) : keyedLines),
+    [keyedLines, isCollapsed],
+  );
+  const displayedPlainCode = useMemo(
+    () =>
+      !keyedLines && isCollapsed
+        ? renderedCode.split("\n").slice(0, COLLAPSED_PREVIEW_LINES).join("\n")
+        : renderedCode,
+    [keyedLines, isCollapsed, renderedCode],
+  );
+
+  const handleToggleExpand = useCallback(() => {
+    setExpanded((prev) => !prev);
+  }, []);
+
   const isCompact = useIsCompactFormFactor();
   const [isHovered, setIsHovered] = useState(false);
   const handlePointerEnter = useCallback(() => setIsHovered(true), []);
@@ -102,15 +129,38 @@ export const HighlightedCodeBlock = React.memo(function HighlightedCodeBlock({
       onPointerEnter={handlePointerEnter}
       onPointerLeave={handlePointerLeave}
     >
-      {keyedLines ? (
+      {displayedKeyedLines ? (
         <Text style={innerTextStyle} dataSet={markdownCopyDataSet.code}>
-          {renderCodeSegments(keyedLines)}
+          {renderCodeSegments(displayedKeyedLines)}
         </Text>
       ) : (
         <Text style={innerTextStyle} dataSet={markdownCopyDataSet.code}>
-          {renderedCode}
+          {displayedPlainCode}
         </Text>
       )}
+      {isCollapsible ? (
+        <Pressable
+          onPress={handleToggleExpand}
+          style={collapseStyles.toggleRow}
+          accessibilityRole="button"
+          accessibilityLabel={
+            isCollapsed ? `展开全部代码，共 ${lineCount} 行` : `收起代码，共 ${lineCount} 行`
+          }
+          dataSet={markdownCopyDataSet.ignore}
+          testID="code-block-collapse-toggle"
+        >
+          {isCollapsed ? (
+            <ChevronDown size={13} color={collapseStyles.iconColor.color} />
+          ) : (
+            <ChevronUp size={13} color={collapseStyles.iconColor.color} />
+          )}
+          <Text style={collapseStyles.toggleText}>
+            {isCollapsed
+              ? `展开全部 · 共 ${lineCount} 行（隐藏 ${lineCount - COLLAPSED_PREVIEW_LINES} 行）`
+              : `收起 · ${lineCount} 行`}
+          </Text>
+        </Pressable>
+      ) : null}
       <CopyButton getCode={getCode} visible={controlsVisible} />
     </View>
   );
@@ -250,5 +300,27 @@ const copyButtonStyles = StyleSheet.create((theme) => ({
   },
   iconHoveredColor: {
     color: theme.colors.foreground,
+  },
+}));
+
+const collapseStyles = StyleSheet.create((theme) => ({
+  toggleRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 5,
+    marginTop: theme.spacing[2],
+    paddingVertical: 5,
+    paddingHorizontal: theme.spacing[2],
+    borderTopWidth: theme.borderWidth[1],
+    borderTopColor: theme.colors.border,
+  },
+  toggleText: {
+    fontSize: 11.5,
+    fontWeight: "500",
+    color: theme.colors.foregroundMuted,
+  },
+  iconColor: {
+    color: theme.colors.foregroundMuted,
   },
 }));

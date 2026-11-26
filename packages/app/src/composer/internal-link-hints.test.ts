@@ -171,4 +171,23 @@ describe("extractInternalLinkAttachments", () => {
       ),
     ).toEqual([]);
   });
+
+  it("enriches card title from descriptive anchor text while preserving parsed identifier in subtitle", () => {
+    const titlesByUrl = new Map([
+      ["https://iwiki.woa.com/p/40123456", "镜像预热计费灰度方案"],
+      ["https://git.woa.com/org/sandstorm/-/merge_requests/123", "https://git.woa.com/org/sandstorm/-/merge_requests/123"],
+    ]);
+    const extracted = extractInternalLinkAttachments(
+      "https://iwiki.woa.com/p/40123456 https://git.woa.com/org/sandstorm/-/merge_requests/123",
+      { titlesByUrl },
+    );
+    expect(extracted[0]).toMatchObject({
+      title: "镜像预热计费灰度方案",
+      subtitle: "iWiki 文档 #40123456",
+    });
+    expect(extracted[1]).toMatchObject({
+      title: "sandstorm !123",
+      subtitle: "org/sandstorm",
+    });
+  });
 });

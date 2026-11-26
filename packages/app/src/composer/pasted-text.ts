@@ -1,5 +1,6 @@
 import type {
   InternalLinkComposerAttachment,
+  SessionRefComposerAttachment,
   WeWorkMessageComposerAttachment,
 } from "@/attachments/types";
 
@@ -23,6 +24,13 @@ export function pasteLinkedClipboardText(
 export function handleWeWorkClipboardPaste(
   _clipboard: Pick<DataTransfer, "getData"> | null,
   _callbacks: WeWorkPasteCallbacks,
+): boolean {
+  return false;
+}
+
+export function handleSessionRefClipboardPaste(
+  _clipboard: Pick<DataTransfer, "getData"> | null,
+  _onAddSessionRef: (attachment: SessionRefComposerAttachment) => void,
 ): boolean {
   return false;
 }

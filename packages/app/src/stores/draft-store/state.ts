@@ -128,6 +128,15 @@ export const UserComposerAttachmentSchema: z.ZodType<UserComposerAttachment> = z
       url: z.string().min(1),
       text: z.string(),
     }),
+    z.strictObject({
+      kind: z.literal("session_ref"),
+      id: z.string().min(1),
+      title: z.string(),
+      subtitle: z.string(),
+      workspaceId: z.string().optional(),
+      agentId: z.string().optional(),
+      text: z.string(),
+    }),
     PluginResourceComposerAttachmentSchema,
     z.strictObject({
       kind: z.literal("github_pr"),

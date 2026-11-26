@@ -49,6 +49,9 @@ import { usePointerCapabilities } from "@/hooks/pointer-capabilities";
 import { useShallow } from "zustand/shallow";
 import {
   ArrowUp,
+  ChevronDown,
+  ChevronUp,
+  CornerUpRight,
   Square,
   Pencil,
   AudioLines,
@@ -59,6 +62,7 @@ import {
   ClipboardPaste,
   MessageSquare,
   Paperclip,
+  X,
 } from "lucide-react-native";
 import * as Clipboard from "expo-clipboard";
 import { FOOTER_HEIGHT } from "@/constants/layout";
@@ -90,15 +94,18 @@ import { encodeImages } from "@/utils/encode-images";
 import { focusWithRetries } from "@/utils/web-focus";
 import {
   addInternalLinkAttachments,
+  addSessionRefAttachment,
   cancelComposerAgent,
   dispatchComposerAgentMessage,
   editQueuedComposerMessage,
   findForgeItemByOption,
   isAttachmentSelectedForForgeItem,
+  moveQueuedComposerMessage,
   openComposerAttachment,
   pickAndPersistImages,
   queueComposerMessage,
   removeComposerAttachmentAtIndex,
+  removeQueuedComposerMessage,
   sendQueuedComposerMessageNow,
   toggleForgeAttachmentFromPicker,
   uploadFileAttachments,
@@ -414,22 +421,35 @@ interface RenderQueueTrackArgs {
   queuedMessages: readonly QueuedMessage[];
   handleEditQueuedMessage: (id: string) => void;
   handleSendQueuedNow: (id: string) => Promise<void>;
+  handleMoveQueuedMessage: (id: string, direction: "up" | "down") => void;
+  handleRemoveQueuedMessage: (id: string) => void;
   editLabel: string;
   sendNowLabel: string;
 }
 
 function renderQueueTrack(args: RenderQueueTrackArgs): ReactElement | null {
-  const { queuedMessages, handleEditQueuedMessage, handleSendQueuedNow, editLabel, sendNowLabel } =
-    args;
+  const {
+    queuedMessages,
+    handleEditQueuedMessage,
+    handleSendQueuedNow,
+    handleMoveQueuedMessage,
+    handleRemoveQueuedMessage,
+    editLabel,
+    sendNowLabel,
+  } = args;
   if (queuedMessages.length === 0) return null;
   return (
-    <View style={styles.queueTrack}>
-      {queuedMessages.map((item) => (
+    <View style={styles.queueTrack} testID="composer-queue-track">
+      {queuedMessages.map((item, index) => (
         <QueuedMessageRow
           key={item.id}
           item={item}
+          index={index}
+          total={queuedMessages.length}
           onEdit={handleEditQueuedMessage}
           onSendNow={handleSendQueuedNow}
+          onMove={handleMoveQueuedMessage}
+          onRemove={handleRemoveQueuedMessage}
           editLabel={editLabel}
           sendNowLabel={sendNowLabel}
         />
@@ -529,6 +549,19 @@ function renderComposerAttachmentPill(args: RenderComposerAttachmentPillArgs): R
     return (
       <InternalLinkAttachmentPill
         key={`internal-link:${attachment.id}`}
+        attachment={attachment}
+        index={index}
+        disabled={disabled}
+        onOpen={onOpen}
+        onRemove={onRemove}
+        removeLabel={labels.removeFile}
+      />
+    );
+  }
+  if (attachment.kind === "session_ref") {
+    return (
+      <SessionRefAttachmentPill
+        key={`session-ref:${attachment.id}`}
         attachment={attachment}
         index={index}
         disabled={disabled}
@@ -728,16 +761,24 @@ function resolveMessageInputPassthroughAction(
 
 interface QueuedMessageRowProps {
   item: QueuedMessage;
+  index: number;
+  total: number;
   onEdit: (id: string) => void;
   onSendNow: (id: string) => void;
+  onMove: (id: string, direction: "up" | "down") => void;
+  onRemove: (id: string) => void;
   editLabel: string;
   sendNowLabel: string;
 }
 
 function QueuedMessageRow({
   item,
+  index,
+  total,
   onEdit,
   onSendNow,
+  onMove,
+  onRemove,
   editLabel,
   sendNowLabel,
 }: QueuedMessageRowProps) {
@@ -747,12 +788,52 @@ function QueuedMessageRow({
   const handleSendNow = useCallback(() => {
     onSendNow(item.id);
   }, [onSendNow, item.id]);
+  const handleMoveUp = useCallback(() => {
+    onMove(item.id, "up");
+  }, [onMove, item.id]);
+  const handleMoveDown = useCallback(() => {
+    onMove(item.id, "down");
+  }, [onMove, item.id]);
+  const handleRemove = useCallback(() => {
+    onRemove(item.id);
+  }, [onRemove, item.id]);
+  const canMoveUp = index > 0;
+  const canMoveDown = index < total - 1;
   return (
-    <View style={styles.queueItem}>
+    <View style={styles.queueItem} testID={`composer-queue-item-${index}`}>
+      {total > 1 ? (
+        <View style={styles.queueIndexBadge}>
+          <Text style={styles.queueIndexText}>{index + 1}</Text>
+        </View>
+      ) : null}
       <Text style={styles.queueText} numberOfLines={2} ellipsizeMode="tail">
-        {item.text}
+        {item.text || `[${item.attachments.length} 附件]`}
       </Text>
       <View style={styles.queueActions}>
+        {total > 1 ? (
+          <>
+            <Pressable
+              onPress={handleMoveUp}
+              disabled={!canMoveUp}
+              style={[styles.queueActionButton, !canMoveUp && styles.queueActionDisabled]}
+              accessibilityLabel="上移"
+              accessibilityRole="button"
+              testID={`composer-queue-move-up-${index}`}
+            >
+              <ThemedChevronUp size={ICON_SIZE.sm} uniProps={iconForegroundMutedMapping} />
+            </Pressable>
+            <Pressable
+              onPress={handleMoveDown}
+              disabled={!canMoveDown}
+              style={[styles.queueActionButton, !canMoveDown && styles.queueActionDisabled]}
+              accessibilityLabel="下移"
+              accessibilityRole="button"
+              testID={`composer-queue-move-down-${index}`}
+            >
+              <ThemedChevronDown size={ICON_SIZE.sm} uniProps={iconForegroundMutedMapping} />
+            </Pressable>
+          </>
+        ) : null}
         <Pressable
           onPress={handleEdit}
           style={styles.queueActionButton}
@@ -760,6 +841,15 @@ function QueuedMessageRow({
           accessibilityRole="button"
         >
           <ThemedPencil size={ICON_SIZE.sm} uniProps={iconForegroundMapping} />
+        </Pressable>
+        <Pressable
+          onPress={handleRemove}
+          style={styles.queueActionButton}
+          accessibilityLabel="移出队列"
+          accessibilityRole="button"
+          testID={`composer-queue-remove-${index}`}
+        >
+          <ThemedX size={ICON_SIZE.sm} uniProps={iconForegroundMutedMapping} />
         </Pressable>
         <Pressable
           onPress={handleSendNow}
@@ -1027,6 +1117,47 @@ function InternalLinkAttachmentPill({
         icon={getInternalLinkPillIcon(attachment.provider)}
         title={attachment.title}
         subtitle={subtitle}
+      />
+    </AttachmentPill>
+  );
+}
+
+interface SessionRefAttachmentPillProps {
+  attachment: Extract<ComposerAttachment, { kind: "session_ref" }>;
+  index: number;
+  disabled: boolean;
+  onOpen: (attachment: ComposerAttachment) => void;
+  onRemove: (index: number) => void;
+  removeLabel: string;
+}
+
+function SessionRefAttachmentPill({
+  attachment,
+  index,
+  disabled,
+  onOpen,
+  onRemove,
+  removeLabel,
+}: SessionRefAttachmentPillProps) {
+  const handleOpen = useCallback(() => {
+    onOpen(attachment);
+  }, [attachment, onOpen]);
+  const handleRemove = useCallback(() => {
+    onRemove(index);
+  }, [index, onRemove]);
+  return (
+    <AttachmentPill
+      testID="composer-session-ref-attachment-pill"
+      onOpen={handleOpen}
+      onRemove={handleRemove}
+      openAccessibilityLabel={attachment.title}
+      removeAccessibilityLabel={removeLabel}
+      disabled={disabled}
+    >
+      <AttachmentLabel
+        icon={sessionRefPillIcon}
+        title={attachment.title}
+        subtitle={attachment.subtitle}
       />
     </AttachmentPill>
   );
@@ -1815,6 +1946,19 @@ function ComposerContentImpl({
     setInspectedInternalLinkAttachment(null);
   }, []);
 
+  const addSessionRef = useCallback(
+    (attachment: Extract<ComposerAttachment, { kind: "session_ref" }>) => {
+      setSelectedAttachments((prev) => addSessionRefAttachment(prev, attachment));
+    },
+    [setSelectedAttachments],
+  );
+
+  const [inspectedSessionRefAttachment, setInspectedSessionRefAttachment] =
+    useState<Extract<ComposerAttachment, { kind: "session_ref" }> | null>(null);
+  const handleCloseSessionRefPreview = useCallback(() => {
+    setInspectedSessionRefAttachment(null);
+  }, []);
+
   const focusInput = useCallback(() => {
     if (isNative) return;
     focusWithRetries({
@@ -2194,6 +2338,7 @@ function ComposerContentImpl({
         openWorkspaceAttachment: openAttachment,
         openWeWorkAttachment: setInspectedWeWorkAttachment,
         openInternalLinkAttachment: setInspectedInternalLinkAttachment,
+        openSessionRefAttachment: setInspectedSessionRefAttachment,
         openExternalUrl: (url) => {
           void openExternalUrl(url);
         },
@@ -2274,6 +2419,29 @@ function ComposerContentImpl({
       }
     },
     [agentId, queueWriter, submitMessage, t],
+  );
+
+  const handleMoveQueuedMessage = useCallback(
+    (id: string, direction: "up" | "down") => {
+      moveQueuedComposerMessage({
+        agentId,
+        messageId: id,
+        direction,
+        queue: queueWriter,
+      });
+    },
+    [agentId, queueWriter],
+  );
+
+  const handleRemoveQueuedMessage = useCallback(
+    (id: string) => {
+      removeQueuedComposerMessage({
+        agentId,
+        messageId: id,
+        queue: queueWriter,
+      });
+    },
+    [agentId, queueWriter],
   );
 
   const handleQueue = useCallback(
@@ -2678,10 +2846,19 @@ function ComposerContentImpl({
         queuedMessages,
         handleEditQueuedMessage,
         handleSendQueuedNow,
+        handleMoveQueuedMessage,
+        handleRemoveQueuedMessage,
         editLabel: t("composer.attachments.editQueuedMessage"),
         sendNowLabel: t("composer.attachments.sendQueuedMessageNow"),
       }),
-    [handleEditQueuedMessage, handleSendQueuedNow, queuedMessages, t],
+    [
+      handleEditQueuedMessage,
+      handleMoveQueuedMessage,
+      handleRemoveQueuedMessage,
+      handleSendQueuedNow,
+      queuedMessages,
+      t,
+    ],
   );
 
   const autocompleteConfiguration = useMemo(
@@ -2810,6 +2987,25 @@ function ComposerContentImpl({
             </View>
           ) : null}
         </AdaptiveModalSheet>
+        <AdaptiveModalSheet
+          visible={inspectedSessionRefAttachment !== null}
+          onClose={handleCloseSessionRefPreview}
+          testID="composer-session-ref-preview-modal"
+          header={
+            inspectedSessionRefAttachment
+              ? {
+                  title: inspectedSessionRefAttachment.title,
+                  subtitle: `Paseo 会话 · ${inspectedSessionRefAttachment.subtitle}`,
+                }
+              : undefined
+          }
+        >
+          {inspectedSessionRefAttachment ? (
+            <Text selectable style={styles.weworkPreviewText}>
+              {inspectedSessionRefAttachment.text}
+            </Text>
+          ) : null}
+        </AdaptiveModalSheet>
         {/* Input area */}
         <View
           style={inputAreaContainerStyle}
@@ -2861,6 +3057,7 @@ function ComposerContentImpl({
                   onAddWeWorkAttachment={addWeWorkAttachment}
                   onUpdateWeWorkAttachment={updateWeWorkAttachment}
                   onAddInternalLinks={addInternalLinks}
+                  onAddSessionRef={addSessionRef}
                   onPasteImages={handleNativePasteImages}
                   client={client}
                   isReadyForDictation={isDictationReady}
@@ -3062,15 +3259,33 @@ const styles = StyleSheet.create((theme: Theme) => ({
   queueActions: {
     flexDirection: "row",
     alignItems: "center",
-    gap: theme.spacing[2],
+    gap: theme.spacing[1],
+  },
+  queueIndexBadge: {
+    minWidth: 18,
+    height: 18,
+    paddingHorizontal: 4,
+    borderRadius: theme.borderRadius.full,
+    backgroundColor: theme.colors.surface2,
+    alignItems: "center",
+    justifyContent: "center",
+    flexShrink: 0,
+  },
+  queueIndexText: {
+    fontSize: 10,
+    fontWeight: "600",
+    color: theme.colors.foregroundMuted,
   },
   queueActionButton: {
-    width: 32,
-    height: 32,
+    width: 28,
+    height: 28,
     borderRadius: theme.borderRadius.full,
     alignItems: "center",
     justifyContent: "center",
     backgroundColor: theme.colors.surface2,
+  },
+  queueActionDisabled: {
+    opacity: 0.35,
   },
   queueSendButton: {
     backgroundColor: theme.colors.accent,
@@ -3094,6 +3309,10 @@ const styles = StyleSheet.create((theme: Theme) => ({
 const ThemedAttachmentSpinner = withUnistyles(LoadingSpinner);
 const ThemedPencil = withUnistyles(Pencil);
 const ThemedArrowUp = withUnistyles(ArrowUp);
+const ThemedChevronUp = withUnistyles(ChevronUp);
+const ThemedChevronDown = withUnistyles(ChevronDown);
+const ThemedX = withUnistyles(X);
+const ThemedCornerUpRight = withUnistyles(CornerUpRight);
 const ThemedGitPullRequest = withUnistyles(GitPullRequest);
 const ThemedCircleDot = withUnistyles(CircleDot);
 const ThemedAudioLines = withUnistyles(AudioLines);
@@ -3121,6 +3340,9 @@ const githubIssuePillIcon = (
 const filePillIcon = <ThemedFileText size={ICON_SIZE.sm} uniProps={iconForegroundMutedMapping} />;
 const weworkMessagePillIcon = (
   <ThemedMessageSquare size={ICON_SIZE.sm} uniProps={iconForegroundMutedMapping} />
+);
+const sessionRefPillIcon = (
+  <ThemedCornerUpRight size={ICON_SIZE.sm} uniProps={iconForegroundMutedMapping} />
 );
 
 const pendingFilePillIcon = (

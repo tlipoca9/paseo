@@ -103,6 +103,25 @@ export function splitComposerAttachmentsForSubmit(
       continue;
     }
 
+    if (attachment.kind === "session_ref") {
+      agentAttachments.push({
+        type: "text",
+        mimeType: "text/plain",
+        title: attachment.title,
+        text: attachment.text,
+        externalResource: {
+          provider: "paseo",
+          providerLabel: "Paseo 会话",
+          resourceType: "session",
+          id: attachment.id,
+          identifier: attachment.subtitle,
+          title: attachment.title,
+          url: "",
+        },
+      });
+      continue;
+    }
+
     if (isWorkspaceAttachment(attachment)) {
       if (attachment.kind === "browser_element" && attachment.attachment.screenshot) {
         images.push(attachment.attachment.screenshot);
