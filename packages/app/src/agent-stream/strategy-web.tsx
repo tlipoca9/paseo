@@ -78,7 +78,7 @@ const historyStartSlotStyle: CSSProperties = {
   flexShrink: 0,
 };
 
-const streamRowsHostStyle: CSSProperties = { position: "relative", width: "100%" };
+const streamRowsHostStyle: CSSProperties = { position: "relative", width: "100%", minWidth: 0 };
 const initialFillStyle: CSSProperties = {
   position: "absolute",
   inset: 0,
@@ -94,6 +94,7 @@ const streamRowStyle: CSSProperties = {
   display: "flex",
   flexDirection: "column",
   width: "100%",
+  minWidth: 0,
 };
 
 function isScrollContainerNearBottom(
@@ -1353,6 +1354,7 @@ function WebStreamViewport(props: StreamRenderInput & { isMobileBreakpoint: bool
       display: "flex",
       flexDirection: "column",
       width: "100%",
+      minWidth: 0,
       transform: `translateY(${start - VIRTUALIZER_SCROLL_MARGIN_PX}px)`,
     }),
     [],

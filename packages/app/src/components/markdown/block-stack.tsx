@@ -24,5 +24,5 @@ export function MarkdownBlockStack({
 }
 
 const styles = StyleSheet.create({
-  stack: { gap: density.blockGap },
+  stack: { gap: density.blockGap, minWidth: 0 },
 });

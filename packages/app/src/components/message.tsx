@@ -785,6 +785,7 @@ interface AssistantMessageProps {
 
 export const assistantMessageStylesheet = StyleSheet.create((theme) => ({
   container: {
+    minWidth: 0,
     paddingVertical: theme.spacing[3],
     ...(isWeb ? { userSelect: "text" as const } : {}),
   },

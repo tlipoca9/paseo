@@ -224,6 +224,8 @@ export const EnrichedMarkdownText = ({
     () => ({
       display: 'flex',
       flexDirection: 'column',
+      minWidth: 0,
+      maxWidth: '100%',
       ...(containerStyle as CSSProperties),
       ...(selectable ? undefined : { userSelect: 'none' }),
       ...(selectionColor

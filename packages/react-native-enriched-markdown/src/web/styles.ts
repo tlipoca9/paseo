@@ -94,6 +94,8 @@ function baseBlock(block: BaseBlock): CSSProperties {
     marginTop: block.marginTop,
     marginBottom: block.marginBottom,
     textAlign: normalizeTextAlign(block.textAlign),
+    overflowWrap: 'anywhere',
+    minWidth: 0,
   };
 }
 
@@ -138,6 +140,8 @@ function blockquoteStyle(style: MarkdownStyleInternal): CSSProperties {
     borderInlineStart: `${blockquote.borderWidth}px solid ${blockquote.borderColor}`,
     borderRadius: blockquote.borderRadius,
     backgroundColor: blockquote.backgroundColor,
+    overflowWrap: 'anywhere',
+    minWidth: 0,
   };
 }
 
@@ -156,6 +160,8 @@ function listStyle(
     marginTop: list.marginTop,
     marginBottom: list.marginBottom,
     paddingInlineStart: isTaskList ? 0 : list.marginLeft,
+    overflowWrap: 'anywhere',
+    minWidth: 0,
   };
 }
 
@@ -301,6 +307,7 @@ function codeStyle(style: MarkdownStyleInternal): CSSProperties {
     padding: '1px 4px',
     direction: 'ltr',
     unicodeBidi: 'embed',
+    overflowWrap: 'anywhere',
   };
 }
 
@@ -509,6 +516,8 @@ function tableWrapperStyle(style: MarkdownStyleInternal): CSSProperties {
       }
     : {};
   return {
+    maxWidth: '100%',
+    minWidth: 0,
     overflowX: 'auto',
     overflowY: 'hidden',
     marginTop: table.marginTop,

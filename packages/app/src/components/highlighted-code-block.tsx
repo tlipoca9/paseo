@@ -203,7 +203,7 @@ interface SplitStyles {
   innerTextStyle: StyleProp<TextStyle>;
 }
 
-const CONTAINER_BASE: ViewStyle = { position: "relative" };
+const CONTAINER_BASE: ViewStyle = { position: "relative", minWidth: 0 };
 const WEB_SELECTABLE: TextStyle = isWeb ? ({ userSelect: "text" } as TextStyle) : {};
 
 function splitFenceStyle(inheritedStyles: TextStyle, textStyle: TextStyle): SplitStyles {

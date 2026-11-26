@@ -1,12 +1,14 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
+import { EnrichedMarkdownText } from "react-native-enriched-markdown";
 import { afterEach, beforeEach, expect, it } from "vitest";
 import { i18n } from "@/i18n/i18next";
 import { WEB_RENDERERS } from "./renderers.web";
 
 const Link = WEB_RENDERERS.link;
 const LINK_TEXT = "src/index.ts";
+const TEST_MD4C_FLAGS = { latexMath: false };
 
 let root: Root;
 let container: HTMLDivElement;
@@ -58,4 +60,38 @@ it("marks a link it recognized from a path for selection copy", () => {
 it("leaves an authored link wrapped", () => {
   const anchor = renderAnchor({ url: "https://example.test/doc", sourceType: "markdown" });
   expect(anchor.hasAttribute("data-paseo-markdown-recognized-link")).toBe(false);
+});
+
+it("wraps long unbroken inline code tokens without overflowing a narrow flex column", async () => {
+  const longIdentifier = "TestAdmitPendingTasksMySQLLegacyDrainReuseConflictAndDeleteGuard";
+  const markdown = [
+    `Checking \`${longIdentifier}\` inline in a paragraph.`,
+    "",
+    `- \`${longIdentifier}\``,
+    "- `Test.*Volume|Test.*Precache|Test.*PreCache`",
+    "- `internal/lifecycle/imagepreparation/scheduler`",
+  ].join("\n");
+
+  container.style.width = "260px";
+  container.style.display = "flex";
+  container.style.flexDirection = "column";
+
+  act(() => {
+    root.render(<EnrichedMarkdownText markdown={markdown} md4cFlags={TEST_MD4C_FLAGS} />);
+  });
+
+  await expect
+    .poll(() => container.querySelectorAll("code").length, { timeout: 5000 })
+    .toBeGreaterThanOrEqual(4);
+
+  const mdRoot = container.querySelector<HTMLElement>(".enrm-text");
+  const codeNodes = Array.from(container.querySelectorAll<HTMLElement>("code"));
+  expect(mdRoot).not.toBeNull();
+
+  const containerRight = container.getBoundingClientRect().right;
+  expect(mdRoot!.scrollWidth).toBeLessThanOrEqual(container.clientWidth + 1);
+  for (const codeEl of codeNodes) {
+    expect(window.getComputedStyle(codeEl).overflowWrap).toBe("anywhere");
+    expect(codeEl.getBoundingClientRect().right).toBeLessThanOrEqual(containerRight + 1);
+  }
 });

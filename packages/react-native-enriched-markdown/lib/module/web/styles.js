@@ -92,7 +92,9 @@ function baseBlock(block) {
     lineHeight: `${block.lineHeight}px`,
     marginTop: block.marginTop,
     marginBottom: block.marginBottom,
-    textAlign: normalizeTextAlign(block.textAlign)
+    textAlign: normalizeTextAlign(block.textAlign),
+    overflowWrap: 'anywhere',
+    minWidth: 0
   };
 }
 function paragraphStyle(style) {
@@ -128,7 +130,9 @@ function blockquoteStyle(style) {
     paddingBottom: blockquote.padding,
     borderInlineStart: `${blockquote.borderWidth}px solid ${blockquote.borderColor}`,
     borderRadius: blockquote.borderRadius,
-    backgroundColor: blockquote.backgroundColor
+    backgroundColor: blockquote.backgroundColor,
+    overflowWrap: 'anywhere',
+    minWidth: 0
   };
 }
 function listStyle(style, isTaskList = false) {
@@ -142,7 +146,9 @@ function listStyle(style, isTaskList = false) {
     lineHeight: `${list.lineHeight}px`,
     marginTop: list.marginTop,
     marginBottom: list.marginBottom,
-    paddingInlineStart: isTaskList ? 0 : list.marginLeft
+    paddingInlineStart: isTaskList ? 0 : list.marginLeft,
+    overflowWrap: 'anywhere',
+    minWidth: 0
   };
 }
 function codeBlockStyle(style) {
@@ -281,7 +287,8 @@ function codeStyle(style) {
     borderRadius: 3,
     padding: '1px 4px',
     direction: 'ltr',
-    unicodeBidi: 'embed'
+    unicodeBidi: 'embed',
+    overflowWrap: 'anywhere'
   };
 }
 function linkStyle(style) {
@@ -456,6 +463,8 @@ function tableWrapperStyle(style) {
     marginRight: table.align === 'right' ? 0 : 'auto'
   } : {};
   return {
+    maxWidth: '100%',
+    minWidth: 0,
     overflowX: 'auto',
     overflowY: 'hidden',
     marginTop: table.marginTop,

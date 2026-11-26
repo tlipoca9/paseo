@@ -138,6 +138,8 @@ export const EnrichedMarkdownText = ({
   const wrapperStyle = useMemo(() => ({
     display: 'flex',
     flexDirection: 'column',
+    minWidth: 0,
+    maxWidth: '100%',
     ...containerStyle,
     ...(selectable ? undefined : {
       userSelect: 'none'

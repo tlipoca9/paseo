@@ -106,6 +106,7 @@ function CodeBlockRenderer({
         style={{
           marginTop: styles.codeBlock.marginTop,
           marginBottom: styles.codeBlock.marginBottom,
+          minWidth: 0,
         }}
       >
         <CustomCodeBlock code={extractNodeText(node)} language={language ?? ''} />

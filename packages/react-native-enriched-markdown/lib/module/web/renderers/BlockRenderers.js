@@ -115,7 +115,8 @@ function CodeBlockRenderer({
     return /*#__PURE__*/_jsx("div", {
       style: {
         marginTop: styles.codeBlock.marginTop,
-        marginBottom: styles.codeBlock.marginBottom
+        marginBottom: styles.codeBlock.marginBottom,
+        minWidth: 0
       },
       children: /*#__PURE__*/_jsx(CustomCodeBlock, {
         code: extractNodeText(node),
