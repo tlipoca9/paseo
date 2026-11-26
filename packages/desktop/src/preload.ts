@@ -122,6 +122,9 @@ contextBridge.exposeInMainWorld("paseoDesktop", {
     resolveWeWorkPaste: (input: unknown) =>
       ipcRenderer.invoke("paseo:clipboard:resolve-wework", input) as Promise<unknown>,
   },
+  system: {
+    getHealth: () => ipcRenderer.invoke("paseo:system:get-health") as Promise<unknown>,
+  },
   menu: {
     showContextMenu: (input?: Record<string, unknown>) =>
       ipcRenderer.invoke("paseo:menu:showContextMenu", input),

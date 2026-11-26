@@ -1,14 +1,24 @@
-import { memo, useCallback, useMemo, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useState } from "react";
 import { Pressable, ScrollView, Text, View } from "react-native";
 import { StyleSheet, useUnistyles } from "react-native-unistyles";
-import { ChevronDown, ChevronRight, PanelRightClose, PanelRightOpen } from "lucide-react-native";
+import { ChevronRight, PanelRightClose, PanelRightOpen } from "lucide-react-native";
 import type { AgentExtensionSkill, AgentExtensionSkillScope } from "@getpaseo/protocol/messages";
 import { useChatExtensionsRailWidth } from "@/chat-rail";
 import { inlineUnistylesStyle } from "@/styles/unistyles-inline-style";
 import { extractSessionExtensionActivity } from "./activity";
 import { EXTENSIONS_RAIL_RIGHT_INSET } from "./geometry";
 import type { AgentExtensionsRailProps } from "./rail";
+import {
+  StatusDot,
+  SystemMonitorSection,
+  ensureRailMotionStyles,
+} from "./system-monitor.web";
 import { useAgentExtensionsQuery } from "./use-agent-extensions";
+import {
+  formatBytesCompact,
+  getWorstServiceStatus,
+  useSystemHealth,
+} from "./use-system-health";
 
 const STORAGE_KEY_COLLAPSED = "paseo.agentExtensionsRail.collapsed";
 
@@ -52,8 +62,13 @@ export const AgentExtensionsRail = memo(function AgentExtensionsRail({
   const railWidth = useChatExtensionsRailWidth();
   const { theme } = useUnistyles();
   const [collapsed, setCollapsed] = useState<boolean>(readInitialCollapsed);
-  const [mcpExpanded, setMcpExpanded] = useState(true);
-  const [skillsExpanded, setSkillsExpanded] = useState(true);
+  // Default MCP and Skills to collapsed so system status stays primary and uncluttered.
+  const [mcpExpanded, setMcpExpanded] = useState(false);
+  const [skillsExpanded, setSkillsExpanded] = useState(false);
+
+  useEffect(() => {
+    ensureRailMotionStyles();
+  }, []);
 
   const visible = railWidth > 0 && Boolean(serverId) && Boolean(agentId);
   const { data } = useAgentExtensionsQuery({
@@ -61,6 +76,7 @@ export const AgentExtensionsRail = memo(function AgentExtensionsRail({
     agentId,
     enabled: visible,
   });
+  const systemHealth = useSystemHealth(visible);
 
   const availableMcpNames = useMemo(
     () => data.mcpServers.map((server) => server.name),
@@ -107,24 +123,50 @@ export const AgentExtensionsRail = memo(function AgentExtensionsRail({
 
   if (!visible) return null;
 
-  const totalCount = data.mcpServers.length + data.skills.length;
-  if (totalCount === 0) return null;
+  const totalExtensions = data.mcpServers.length + data.skills.length;
+  const hasSystemSnapshot = systemHealth.snapshot !== null;
+  if (totalExtensions === 0 && !hasSystemSnapshot) return null;
+
+  const overallServiceStatus = hasSystemSnapshot
+    ? getWorstServiceStatus(systemHealth.snapshot!.services)
+    : "ok";
+
+  const usedMcpCount = activity.usedMcpServers.size;
+  const usedSkillCount = activity.usedSkills.size;
 
   if (collapsed) {
+    const pillLabel = hasSystemSnapshot
+      ? `CPU ${systemHealth.snapshot!.cpu.percent}%${
+          systemHealth.snapshot!.disk
+            ? ` · ${formatBytesCompact(systemHealth.snapshot!.disk.freeBytes)}`
+            : ""
+        }`
+      : `MCP ${data.mcpServers.length} · Skills ${data.skills.length}`;
+
     return (
-      <View style={styles.collapsedContainer} pointerEvents="box-none" testID="agent-extensions-rail">
-        <Pressable
-          style={styles.collapsedPill}
-          onPress={handleToggleCollapsed}
-          accessibilityRole="button"
-          accessibilityLabel="Expand MCP and Skills panel"
-          testID="agent-extensions-rail-expand"
-        >
-          <PanelRightOpen size={12} color={theme.colors.foregroundExtraMuted} />
-          <Text style={styles.collapsedPillText} numberOfLines={1}>
-            MCP {data.mcpServers.length} · Skills {data.skills.length}
-          </Text>
-        </Pressable>
+      <View
+        style={styles.collapsedContainer}
+        pointerEvents="box-none"
+        testID="agent-extensions-rail"
+      >
+        <div className="paseo-rail-pill" style={{ borderRadius: 9999 }}>
+          <Pressable
+            style={styles.collapsedPill}
+            onPress={handleToggleCollapsed}
+            accessibilityRole="button"
+            accessibilityLabel="Expand status and extensions panel"
+            testID="agent-extensions-rail-expand"
+          >
+            {hasSystemSnapshot ? (
+              <StatusDot status={overallServiceStatus} />
+            ) : (
+              <PanelRightOpen size={12} color={theme.colors.foregroundExtraMuted} />
+            )}
+            <Text style={styles.collapsedPillText} numberOfLines={1}>
+              <span className="paseo-rail-tabular">{pillLabel}</span>
+            </Text>
+          </Pressable>
+        </div>
       </View>
     );
   }
@@ -135,153 +177,211 @@ export const AgentExtensionsRail = memo(function AgentExtensionsRail({
       pointerEvents="box-none"
       testID="agent-extensions-rail"
     >
-      <View style={styles.panel}>
-        <View style={styles.header}>
-          <Text style={styles.headerTitle} numberOfLines={1}>
-            MCP & Skills
-          </Text>
-          <Pressable
-            style={styles.collapseButton}
-            onPress={handleToggleCollapsed}
-            accessibilityRole="button"
-            accessibilityLabel="Collapse MCP and Skills panel"
-            testID="agent-extensions-rail-collapse"
+      <div className="paseo-rail-panel" style={{ maxHeight: "100%", borderRadius: 10 }}>
+        <View style={styles.panel}>
+          <View style={styles.header}>
+            <View style={styles.headerLeft}>
+              {hasSystemSnapshot ? <StatusDot status={overallServiceStatus} /> : null}
+              <Text style={styles.headerTitle} numberOfLines={1}>
+                {hasSystemSnapshot ? "Status" : "MCP & Skills"}
+              </Text>
+            </View>
+            <Pressable
+              style={styles.collapseButton}
+              onPress={handleToggleCollapsed}
+              accessibilityRole="button"
+              accessibilityLabel="Collapse status and extensions panel"
+              testID="agent-extensions-rail-collapse"
+            >
+              <PanelRightClose size={13} color={theme.colors.foregroundExtraMuted} />
+            </Pressable>
+          </View>
+
+          <ScrollView
+            style={styles.scroll}
+            contentContainerStyle={styles.scrollContent}
+            showsVerticalScrollIndicator={false}
           >
-            <PanelRightClose size={13} color={theme.colors.foregroundExtraMuted} />
-          </Pressable>
-        </View>
+            {hasSystemSnapshot ? (
+              <SystemMonitorSection
+                snapshot={systemHealth.snapshot!}
+                cpuHistory={systemHealth.cpuHistory}
+              />
+            ) : null}
 
-        <ScrollView
-          style={styles.scroll}
-          contentContainerStyle={styles.scrollContent}
-          showsVerticalScrollIndicator={false}
-        >
-          {data.mcpServers.length > 0 ? (
-            <View style={styles.section} testID="agent-extensions-mcp-section">
-              <Pressable
-                style={styles.sectionHeader}
-                onPress={handleToggleMcp}
-                accessibilityRole="button"
-              >
-                {mcpExpanded ? (
-                  <ChevronDown size={11} color={theme.colors.foregroundExtraMuted} />
-                ) : (
-                  <ChevronRight size={11} color={theme.colors.foregroundExtraMuted} />
-                )}
-                <Text style={styles.sectionTitle}>MCP</Text>
-                <Text style={styles.sectionCount}>{data.mcpServers.length}</Text>
-              </Pressable>
+            {hasSystemSnapshot && totalExtensions > 0 ? <View style={styles.divider} /> : null}
 
-              {mcpExpanded ? (
-                <View style={styles.itemList}>
-                  {data.mcpServers.map((server) => {
-                    const isUsed = activity.usedMcpServers.has(server.name);
-                    const hasBrowserBadge = server.badges?.includes("browser") === true;
-                    const tooltip = [
-                      server.name,
-                      `source: ${server.source}`,
-                      server.transport && server.transport !== "unknown"
-                        ? `transport: ${server.transport}`
-                        : null,
-                      server.detail ? server.detail : null,
-                      hasBrowserBadge ? "includes browser_* tools" : null,
-                      isUsed ? "used in this session" : null,
-                    ]
-                      .filter(Boolean)
-                      .join(" · ");
-
-                    return (
-                      <div key={server.name} title={tooltip}>
-                        <View
-                          style={styles.itemRow}
-                          testID={`agent-extensions-mcp-${server.name}`}
-                          dataSet={{ used: isUsed ? "true" : "false" }}
-                        >
-                          <View style={[styles.dot, isUsed && styles.dotUsed]} />
-                          <Text
-                            style={[styles.itemName, isUsed && styles.itemNameUsed]}
-                            numberOfLines={1}
+            {totalExtensions > 0 ? (
+              <View style={styles.extensionsBlock}>
+                {data.mcpServers.length > 0 ? (
+                  <View style={styles.section} testID="agent-extensions-mcp-section">
+                    <div className="paseo-rail-row-hover">
+                      <Pressable
+                        style={styles.sectionHeader}
+                        onPress={handleToggleMcp}
+                        accessibilityRole="button"
+                        testID="agent-extensions-mcp-toggle"
+                      >
+                        <View style={styles.sectionHeaderLeft}>
+                          <span
+                            className="paseo-rail-chevron"
+                            data-open={mcpExpanded ? "true" : "false"}
                           >
-                            {server.name}
-                          </Text>
-                          {hasBrowserBadge ? (
-                            <View style={styles.badge}>
-                              <Text style={styles.badgeText}>browser</Text>
-                            </View>
-                          ) : null}
-                          {server.source === "plugin" || server.source === "workspace" ? (
-                            <Text style={styles.sourceTag} numberOfLines={1}>
-                              {server.source}
+                            <ChevronRight size={11} color={theme.colors.foregroundExtraMuted} />
+                          </span>
+                          <Text style={styles.sectionTitle}>MCP</Text>
+                        </View>
+                        <View style={styles.countGroup}>
+                          {usedMcpCount > 0 ? (
+                            <Text style={styles.usedCount}>
+                              <span className="paseo-rail-tabular">{usedMcpCount}/</span>
                             </Text>
                           ) : null}
+                          <Text style={styles.sectionCount}>
+                            <span className="paseo-rail-tabular">{data.mcpServers.length}</span>
+                          </Text>
+                        </View>
+                      </Pressable>
+                    </div>
+
+                    <div
+                      className="paseo-rail-accordion"
+                      data-open={mcpExpanded ? "true" : "false"}
+                    >
+                      <div className="paseo-rail-accordion-inner">
+                        <View style={styles.itemList}>
+                          {data.mcpServers.map((server) => {
+                            const isUsed = activity.usedMcpServers.has(server.name);
+                            const hasBrowserBadge = server.badges?.includes("browser") === true;
+                            const tooltip = [
+                              server.name,
+                              `source: ${server.source}`,
+                              server.transport && server.transport !== "unknown"
+                                ? `transport: ${server.transport}`
+                                : null,
+                              server.detail ? server.detail : null,
+                              hasBrowserBadge ? "includes browser_* tools" : null,
+                              isUsed ? "used in this session" : null,
+                            ]
+                              .filter(Boolean)
+                              .join(" · ");
+
+                            return (
+                              <div key={server.name} title={tooltip}>
+                                <View
+                                  style={styles.itemRow}
+                                  testID={`agent-extensions-mcp-${server.name}`}
+                                  dataSet={{ used: isUsed ? "true" : "false" }}
+                                >
+                                  <View style={[styles.dot, isUsed && styles.dotUsed]} />
+                                  <Text
+                                    style={[styles.itemName, isUsed && styles.itemNameUsed]}
+                                    numberOfLines={1}
+                                  >
+                                    {server.name}
+                                  </Text>
+                                  {hasBrowserBadge ? (
+                                    <View style={styles.badge}>
+                                      <Text style={styles.badgeText}>browser</Text>
+                                    </View>
+                                  ) : null}
+                                  {server.source === "plugin" || server.source === "workspace" ? (
+                                    <Text style={styles.sourceTag} numberOfLines={1}>
+                                      {server.source}
+                                    </Text>
+                                  ) : null}
+                                </View>
+                              </div>
+                            );
+                          })}
                         </View>
                       </div>
-                    );
-                  })}
-                </View>
-              ) : null}
-            </View>
-          ) : null}
+                    </div>
+                  </View>
+                ) : null}
 
-          {skillGroups.length > 0 ? (
-            <View style={styles.section} testID="agent-extensions-skills-section">
-              <Pressable
-                style={styles.sectionHeader}
-                onPress={handleToggleSkills}
-                accessibilityRole="button"
-              >
-                {skillsExpanded ? (
-                  <ChevronDown size={11} color={theme.colors.foregroundExtraMuted} />
-                ) : (
-                  <ChevronRight size={11} color={theme.colors.foregroundExtraMuted} />
-                )}
-                <Text style={styles.sectionTitle}>Skills</Text>
-                <Text style={styles.sectionCount}>{data.skills.length}</Text>
-              </Pressable>
+                {skillGroups.length > 0 ? (
+                  <View style={styles.section} testID="agent-extensions-skills-section">
+                    <div className="paseo-rail-row-hover">
+                      <Pressable
+                        style={styles.sectionHeader}
+                        onPress={handleToggleSkills}
+                        accessibilityRole="button"
+                        testID="agent-extensions-skills-toggle"
+                      >
+                        <View style={styles.sectionHeaderLeft}>
+                          <span
+                            className="paseo-rail-chevron"
+                            data-open={skillsExpanded ? "true" : "false"}
+                          >
+                            <ChevronRight size={11} color={theme.colors.foregroundExtraMuted} />
+                          </span>
+                          <Text style={styles.sectionTitle}>Skills</Text>
+                        </View>
+                        <View style={styles.countGroup}>
+                          {usedSkillCount > 0 ? (
+                            <Text style={styles.usedCount}>
+                              <span className="paseo-rail-tabular">{usedSkillCount}/</span>
+                            </Text>
+                          ) : null}
+                          <Text style={styles.sectionCount}>
+                            <span className="paseo-rail-tabular">{data.skills.length}</span>
+                          </Text>
+                        </View>
+                      </Pressable>
+                    </div>
 
-              {skillsExpanded ? (
-                <View style={styles.skillGroups}>
-                  {skillGroups.map((group) => (
-                    <View
-                      key={group.scope}
-                      style={styles.skillGroup}
-                      testID={`agent-extensions-skills-${group.scope}`}
+                    <div
+                      className="paseo-rail-accordion"
+                      data-open={skillsExpanded ? "true" : "false"}
                     >
-                      <Text style={styles.groupLabel}>{group.label}</Text>
-                      <View style={styles.itemList}>
-                        {group.items.map((skill) => {
-                          const isUsed = activity.usedSkills.has(skill.name);
-                          const tooltip = skill.description
-                            ? `${skill.name}\n${skill.description}`
-                            : skill.name;
+                      <div className="paseo-rail-accordion-inner">
+                        <View style={styles.skillGroups}>
+                          {skillGroups.map((group) => (
+                            <View
+                              key={group.scope}
+                              style={styles.skillGroup}
+                              testID={`agent-extensions-skills-${group.scope}`}
+                            >
+                              <Text style={styles.groupLabel}>{group.label}</Text>
+                              <View style={styles.itemList}>
+                                {group.items.map((skill) => {
+                                  const isUsed = activity.usedSkills.has(skill.name);
+                                  const tooltip = skill.description
+                                    ? `${skill.name}\n${skill.description}`
+                                    : skill.name;
 
-                          return (
-                            <div key={`${group.scope}:${skill.name}`} title={tooltip}>
-                              <View
-                                style={styles.itemRow}
-                                testID={`agent-extensions-skill-${skill.name}`}
-                                dataSet={{ used: isUsed ? "true" : "false" }}
-                              >
-                                <View style={[styles.dot, isUsed && styles.dotUsed]} />
-                                <Text
-                                  style={[styles.itemName, isUsed && styles.itemNameUsed]}
-                                  numberOfLines={1}
-                                >
-                                  {skill.name}
-                                </Text>
+                                  return (
+                                    <div key={`${group.scope}:${skill.name}`} title={tooltip}>
+                                      <View
+                                        style={styles.itemRow}
+                                        testID={`agent-extensions-skill-${skill.name}`}
+                                        dataSet={{ used: isUsed ? "true" : "false" }}
+                                      >
+                                        <View style={[styles.dot, isUsed && styles.dotUsed]} />
+                                        <Text
+                                          style={[styles.itemName, isUsed && styles.itemNameUsed]}
+                                          numberOfLines={1}
+                                        >
+                                          {skill.name}
+                                        </Text>
+                                      </View>
+                                    </div>
+                                  );
+                                })}
                               </View>
-                            </div>
-                          );
-                        })}
-                      </View>
-                    </View>
-                  ))}
-                </View>
-              ) : null}
-            </View>
-          ) : null}
-        </ScrollView>
-      </View>
+                            </View>
+                          ))}
+                        </View>
+                      </div>
+                    </div>
+                  </View>
+                ) : null}
+              </View>
+            ) : null}
+          </ScrollView>
+        </View>
+      </div>
     </View>
   );
 });
@@ -303,7 +403,11 @@ const styles = StyleSheet.create((theme) => ({
     borderWidth: theme.borderWidth[1],
     borderColor: theme.colors.border,
     backgroundColor: theme.colors.surface1,
-    opacity: 0.92,
+    opacity: 0.94,
+    shadowColor: "#000000",
+    shadowOpacity: 0.08,
+    shadowRadius: 12,
+    shadowOffset: { width: 0, height: 4 },
   },
   collapsedContainer: {
     position: "absolute",
@@ -314,18 +418,23 @@ const styles = StyleSheet.create((theme) => ({
   collapsedPill: {
     flexDirection: "row",
     alignItems: "center",
-    gap: theme.spacing[1],
+    gap: 6,
     paddingHorizontal: theme.spacing[2],
     paddingVertical: theme.spacing[1],
     borderRadius: theme.borderRadius.full,
     borderWidth: theme.borderWidth[1],
     borderColor: theme.colors.border,
     backgroundColor: theme.colors.surface1,
-    opacity: 0.85,
+    opacity: 0.88,
+    shadowColor: "#000000",
+    shadowOpacity: 0.06,
+    shadowRadius: 8,
+    shadowOffset: { width: 0, height: 2 },
   },
   collapsedPillText: {
-    fontSize: 11,
-    color: theme.colors.foregroundExtraMuted,
+    fontSize: 10.5,
+    fontWeight: "500",
+    color: theme.colors.foregroundMuted,
   },
   header: {
     flexDirection: "row",
@@ -333,9 +442,15 @@ const styles = StyleSheet.create((theme) => ({
     justifyContent: "space-between",
     paddingHorizontal: theme.spacing[1],
     paddingBottom: theme.spacing[1],
-    marginBottom: theme.spacing[1],
+    marginBottom: theme.spacing[2],
     borderBottomWidth: theme.borderWidth[1],
     borderBottomColor: theme.colors.border,
+  },
+  headerLeft: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    flexShrink: 1,
   },
   headerTitle: {
     fontSize: 11,
@@ -352,31 +467,59 @@ const styles = StyleSheet.create((theme) => ({
     flexShrink: 1,
   },
   scrollContent: {
-    gap: theme.spacing[3],
+    gap: theme.spacing[2],
     paddingBottom: theme.spacing[1],
   },
-  section: {
+  divider: {
+    height: 1,
+    backgroundColor: theme.colors.border,
+    marginVertical: 2,
+    opacity: 0.7,
+  },
+  extensionsBlock: {
     gap: theme.spacing[1],
+  },
+  section: {
+    gap: 2,
   },
   sectionHeader: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 4,
+    justifyContent: "space-between",
+    width: "100%",
+    gap: 5,
     paddingHorizontal: theme.spacing[1],
-    paddingVertical: 2,
+    paddingVertical: 3,
+  },
+  sectionHeaderLeft: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 5,
+    flexShrink: 0,
   },
   sectionTitle: {
     fontSize: 11,
     fontWeight: "600",
     color: theme.colors.foregroundMuted,
   },
+  countGroup: {
+    flexDirection: "row",
+    alignItems: "center",
+    marginLeft: "auto",
+  },
+  usedCount: {
+    fontSize: 10,
+    fontWeight: "600",
+    color: theme.colors.success,
+  },
   sectionCount: {
     fontSize: 10,
     color: theme.colors.foregroundExtraMuted,
-    marginLeft: "auto",
   },
   itemList: {
     gap: 2,
+    paddingTop: 2,
+    paddingBottom: 4,
   },
   itemRow: {
     flexDirection: "row",
@@ -426,12 +569,14 @@ const styles = StyleSheet.create((theme) => ({
   },
   skillGroups: {
     gap: theme.spacing[2],
+    paddingTop: 2,
+    paddingBottom: 4,
   },
   skillGroup: {
     gap: 2,
   },
   groupLabel: {
-    fontSize: 10,
+    fontSize: 9.5,
     fontWeight: "500",
     color: theme.colors.foregroundExtraMuted,
     paddingHorizontal: theme.spacing[1],

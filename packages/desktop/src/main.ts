@@ -63,6 +63,7 @@ import {
   resolveWeWorkPaste,
   type WeWorkClipboardData,
 } from "./features/wework-clipboard.js";
+import { getSystemHealth } from "./features/system-health.js";
 import { createBrowserCaptureService } from "./features/browser-capture.js";
 import { registerEditorTargetHandlers } from "./features/editor-targets/ipc.js";
 import { resolveAppIconPath } from "./features/stamped-icon.js";
@@ -601,6 +602,14 @@ ipcMain.handle("paseo:clipboard:resolve-wework", async (_event, rawInput: unknow
     return null;
   }
   return resolveWeWorkPaste(candidate as WeWorkClipboardData);
+});
+
+ipcMain.handle("paseo:system:get-health", async () => {
+  try {
+    return await getSystemHealth();
+  } catch {
+    return null;
+  }
 });
 
 protocol.registerSchemesAsPrivileged([

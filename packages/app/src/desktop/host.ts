@@ -209,6 +209,43 @@ export interface DesktopClipboardBridge {
   resolveWeWorkPaste?: (input: WeWorkClipboardData) => Promise<ResolvedWeWorkPaste | null>;
 }
 
+export type DesktopSystemServiceStatus = "ok" | "warn" | "error" | "unknown";
+
+export interface DesktopSystemServiceNode {
+  id: string;
+  name: string;
+  status: DesktopSystemServiceStatus;
+  summary: string;
+  detail?: string;
+  children?: DesktopSystemServiceNode[];
+}
+
+export interface DesktopSystemHealthSnapshot {
+  timestamp: number;
+  cpu: {
+    percent: number;
+    cores: number;
+    loadAvg1m: number;
+  };
+  memory: {
+    usedBytes: number;
+    totalBytes: number;
+    percent: number;
+  };
+  disk: {
+    mount: string;
+    usedBytes: number;
+    freeBytes: number;
+    totalBytes: number;
+    percent: number;
+  } | null;
+  services: DesktopSystemServiceNode[];
+}
+
+export interface DesktopSystemBridge {
+  getHealth?: () => Promise<DesktopSystemHealthSnapshot | null>;
+}
+
 export interface DesktopHostBridge {
   platform?: string;
   windowChromeMode?: string;
@@ -225,6 +262,7 @@ export interface DesktopHostBridge {
   editor?: DesktopEditorBridge;
   webUtils?: DesktopWebUtilsBridge;
   clipboard?: DesktopClipboardBridge;
+  system?: DesktopSystemBridge;
   menu?: DesktopMenuBridge;
   browser?: DesktopBrowserBridge;
 }
