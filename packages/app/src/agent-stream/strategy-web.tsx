@@ -752,8 +752,16 @@ function WebStreamViewport(props: StreamRenderInput & { isMobileBreakpoint: bool
     if (!rows) return;
     const shouldAnchor = !followOutputRef.current && !isJumpSettling();
     if (!shouldAnchor) readingAnchor.reset();
+    // When rows above shrink near the bottom, the browser clamps scrollTop to
+    // the new maxScrollTop before reconcile runs. Use the pre-clamp offset so
+    // the shrink is not subtracted twice.
+    const browserClamped =
+      shouldAnchor &&
+      isScrollContainerAtBottom(container) &&
+      lastKnownScrollTopRef.current > container.scrollTop + USER_SCROLL_DELTA_EPSILON;
+    const effectiveScrollTop = browserClamped ? lastKnownScrollTopRef.current : container.scrollTop;
     const correctedTop = readingAnchor.reconcile(
-      container.scrollTop,
+      effectiveScrollTop,
       rows,
       false,
       props.readingRowReplacements,
@@ -768,6 +776,8 @@ function WebStreamViewport(props: StreamRenderInput & { isMobileBreakpoint: bool
       // The DOM scroll event arrives later. Fill the corrected virtual range in
       // this layout so the reader does not get a frame containing only the pin.
       virtualOffsetListener.current?.(container.scrollTop, false);
+    } else if (browserClamped) {
+      lastKnownScrollTopRef.current = container.scrollTop;
     }
     // A disclosure that closes back to the end of the list rejoins the output.
     if (disclosurePendingRef.current) {
@@ -828,9 +838,15 @@ function WebStreamViewport(props: StreamRenderInput & { isMobileBreakpoint: bool
       rearmHistoryStartFromUserIntent();
     }
 
-    lastKnownScrollTopRef.current = currentScrollTop;
-    if (!followOutputRef.current && !isJumpSettling() && (scrolledUp || scrolledDown)) {
-      readingAnchor.scroll(currentScrollTop);
+    // A content shrink near the bottom causes the browser to clamp scrollTop
+    // and emit a synthetic scroll event before layout reconciles. Do not treat
+    // that clamp as a user scroll onto stale row geometry.
+    const isBrowserClampScroll = scrolledUp && !userScrolledUp && isAtBottom;
+    if (!isBrowserClampScroll) {
+      lastKnownScrollTopRef.current = currentScrollTop;
+      if (!followOutputRef.current && !isJumpSettling() && (scrolledUp || scrolledDown)) {
+        readingAnchor.scroll(currentScrollTop);
+      }
     }
     updateScrollMetrics();
     evaluateHistoryStart();
@@ -1057,6 +1073,9 @@ function WebStreamViewport(props: StreamRenderInput & { isMobileBreakpoint: bool
         !canNestedScrollerConsumeUpwardInput(event.target, scrollContainer)
       ) {
         markUpwardViewportInput();
+        if (followOutputRef.current && scrollContainer.scrollTop > 0) {
+          stopFollowingOutputFromUserIntent();
+        }
       }
     };
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -1146,6 +1165,16 @@ function WebStreamViewport(props: StreamRenderInput & { isMobileBreakpoint: bool
     const handleTouchEnd = () => {
       lastTouchClientYRef.current = null;
     };
+    const handlePluginHoldRow = (event: Event) => {
+      const detail = (
+        event as CustomEvent<{ rowId?: string; triggerEdge?: "top" | "bottom" }>
+      ).detail;
+      if (!detail?.rowId || !viewportRef.current) {
+        return;
+      }
+      event.preventDefault();
+      viewportRef.current.holdRow(detail.rowId, () => {}, detail.triggerEdge ?? "top");
+    };
 
     // Read user movement before the virtualizer's bubbling listener flushes a
     // layout correction. Scroll events reuse the last committed row geometry.
@@ -1161,6 +1190,7 @@ function WebStreamViewport(props: StreamRenderInput & { isMobileBreakpoint: bool
     scrollContainer.addEventListener("touchmove", handleTouchMove, { passive: true });
     scrollContainer.addEventListener("touchend", handleTouchEnd, { passive: true });
     scrollContainer.addEventListener("touchcancel", handleTouchEnd, { passive: true });
+    scrollContainer.addEventListener("paseo:hold-row", handlePluginHoldRow);
 
     return () => {
       scrollContainer.removeEventListener("scroll", handleDomScroll, true);
@@ -1175,6 +1205,7 @@ function WebStreamViewport(props: StreamRenderInput & { isMobileBreakpoint: bool
       scrollContainer.removeEventListener("touchmove", handleTouchMove);
       scrollContainer.removeEventListener("touchend", handleTouchEnd);
       scrollContainer.removeEventListener("touchcancel", handleTouchEnd);
+      scrollContainer.removeEventListener("paseo:hold-row", handlePluginHoldRow);
       clearUpwardInputEvidence();
     };
   }, [
