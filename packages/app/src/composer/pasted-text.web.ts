@@ -1,8 +1,18 @@
 import TurndownService from "turndown";
 import { tables } from "turndown-plugin-gfm";
-import { getDesktopHost } from "@/desktop/host";
+import type { WeWorkMessageComposerAttachment } from "@/attachments/types";
+import { getDesktopHost, type WeWorkClipboardData } from "@/desktop/host";
 import { createAssistantMarkdownParser } from "@/utils/assistant-markdown-parser";
 import { appendInternalLinkHints } from "./internal-link-hints";
+
+export interface WeWorkPasteCallbacks {
+  onAddAttachment: (attachment: WeWorkMessageComposerAttachment) => void;
+  onUpdateAttachment: (
+    id: string,
+    update: { title: string; subtitle: string; text: string },
+  ) => void;
+  isDisposed?: () => boolean;
+}
 
 const markdown = new TurndownService({
   codeBlockStyle: "fenced",
@@ -60,30 +70,83 @@ export function pasteLinkedClipboardText(
   return input.ownerDocument.execCommand("insertText", false, text);
 }
 
+function createWeWorkAttachmentId(): string {
+  return `wework_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+}
+
 /**
- * Paste macOS WeWork messages decoded from `WWKPrivatePBDataReportKey` via the
- * Electron desktop bridge. Returns false when not running on desktop or when
- * the clipboard does not hold valid WeWork message data.
+ * Handle macOS WeWork clipboard pastes via the Electron desktop bridge:
+ * - Full message paste (`kind: "messages"`): immediately adds a native
+ *   `wework_message` attachment card and returns `true` so default text
+ *   insertion is prevented, then fires best-effort background `wxwork`
+ *   enrichment to upgrade the card's subtitle/text.
+ * - Partial drag-selected text (`kind: "partial"`): returns `false` so clean
+ *   plain text pastes normally into the textarea (zero bracketed hints), and
+ *   fires best-effort background `wxwork` resolution to attach a card if found.
  */
-export function pasteWeWorkClipboardText(
-  input: HTMLElement,
+export function handleWeWorkClipboardPaste(
   clipboard: Pick<DataTransfer, "getData"> | null,
+  callbacks: WeWorkPasteCallbacks,
 ): boolean {
-  const reader = getDesktopHost()?.clipboard?.readWeWorkPaste;
+  const bridge = getDesktopHost()?.clipboard;
+  const reader = bridge?.readWeWorkData;
   if (!reader) return false;
-  let formatted: string | null = null;
+
+  let data: WeWorkClipboardData | null = null;
   try {
-    formatted = reader(clipboard?.getData("text/plain") ?? "");
+    data = reader(clipboard?.getData("text/plain") ?? "");
   } catch {
     return false;
   }
-  if (!formatted) return false;
-  input.focus();
-  return input.ownerDocument.execCommand(
-    "insertText",
-    false,
-    appendInternalLinkHints(formatted),
-  );
+  if (!data) return false;
+
+  const resolver = bridge?.resolveWeWorkPaste;
+
+  if (data.kind === "messages") {
+    const id = createWeWorkAttachmentId();
+    callbacks.onAddAttachment({
+      kind: "wework_message",
+      id,
+      title: data.title,
+      subtitle: data.subtitle,
+      text: data.text,
+    });
+
+    if (resolver) {
+      void resolver(data)
+        .then((resolved) => {
+          if (!resolved || callbacks.isDisposed?.()) return;
+          callbacks.onUpdateAttachment(id, resolved);
+        })
+        .catch(() => {
+          // Best-effort enrichment; ignore errors.
+        });
+    }
+
+    return true;
+  }
+
+  if (data.kind === "partial") {
+    if (resolver) {
+      void resolver(data)
+        .then((resolved) => {
+          if (!resolved || callbacks.isDisposed?.()) return;
+          callbacks.onAddAttachment({
+            kind: "wework_message",
+            id: createWeWorkAttachmentId(),
+            title: resolved.title,
+            subtitle: resolved.subtitle,
+            text: resolved.text,
+          });
+        })
+        .catch(() => {
+          // Best-effort enrichment; ignore errors.
+        });
+    }
+    return false;
+  }
+
+  return false;
 }
 
 /**

@@ -57,7 +57,12 @@ import {
   ensureNotificationCenterRegistration,
 } from "./features/notifications.js";
 import { createExternalUrlOpener } from "./features/opener.js";
-import { readWeWorkClipboardPasteAsync } from "./features/wework-clipboard.js";
+import {
+  readWeWorkClipboardDataAsync,
+  readWeWorkClipboardPasteAsync,
+  resolveWeWorkPaste,
+  type WeWorkClipboardData,
+} from "./features/wework-clipboard.js";
 import { createBrowserCaptureService } from "./features/browser-capture.js";
 import { registerEditorTargetHandlers } from "./features/editor-targets/ipc.js";
 import { resolveAppIconPath } from "./features/stamped-icon.js";
@@ -573,6 +578,29 @@ ipcMain.on("paseo:clipboard:read-wework", (event, rawPlainText: unknown) => {
     .catch(() => {
       event.returnValue = null;
     });
+});
+
+ipcMain.on("paseo:clipboard:read-wework-data", (event, rawPlainText: unknown) => {
+  void readWeWorkClipboardDataAsync(
+    clipboard,
+    process.platform,
+    typeof rawPlainText === "string" ? rawPlainText : undefined,
+  )
+    .then((result) => {
+      event.returnValue = result;
+    })
+    .catch(() => {
+      event.returnValue = null;
+    });
+});
+
+ipcMain.handle("paseo:clipboard:resolve-wework", async (_event, rawInput: unknown) => {
+  if (!rawInput || typeof rawInput !== "object") return null;
+  const candidate = rawInput as Partial<WeWorkClipboardData>;
+  if (candidate.kind !== "messages" && candidate.kind !== "partial") {
+    return null;
+  }
+  return resolveWeWorkPaste(candidate as WeWorkClipboardData);
 });
 
 protocol.registerSchemesAsPrivileged([

@@ -5,6 +5,7 @@ import {
   CircleDot,
   FileText,
   GitPullRequest,
+  MessageSquare,
   MessageSquareCode,
   MousePointer2,
 } from "lucide-react-native";
@@ -88,10 +89,15 @@ export function getAgentAttachmentPillContent(
       };
     case "text":
       if (attachment.externalResource) {
+        const isWeWork = attachment.externalResource.provider === "wework";
         return {
-          icon: attachmentGithubIssueIcon,
+          icon: isWeWork ? attachmentMessageSquareIcon : attachmentGithubIssueIcon,
           title: attachment.externalResource.title,
-          subtitle: `${attachment.externalResource.providerLabel} ${attachment.externalResource.identifier}`,
+          subtitle: isWeWork
+            ? attachment.externalResource.identifier
+              ? `${attachment.externalResource.providerLabel} · ${attachment.externalResource.identifier}`
+              : attachment.externalResource.providerLabel
+            : `${attachment.externalResource.providerLabel} ${attachment.externalResource.identifier}`,
         };
       }
       return {
@@ -143,6 +149,7 @@ export function getWorkspaceAttachmentPillContent(
 const ThemedAttachmentFileText = withUnistyles(FileText);
 const ThemedAttachmentGitPullRequest = withUnistyles(GitPullRequest);
 const ThemedAttachmentCircleDot = withUnistyles(CircleDot);
+const ThemedAttachmentMessageSquare = withUnistyles(MessageSquare);
 const ThemedAttachmentMessageSquareCode = withUnistyles(MessageSquareCode);
 const ThemedAttachmentMousePointer = withUnistyles(MousePointer2);
 
@@ -150,6 +157,9 @@ const iconForegroundMutedMapping = (theme: Theme) => ({ color: theme.colors.fore
 
 const attachmentReviewIcon = (
   <ThemedAttachmentMessageSquareCode size={ICON_SIZE.sm} uniProps={iconForegroundMutedMapping} />
+);
+const attachmentMessageSquareIcon = (
+  <ThemedAttachmentMessageSquare size={ICON_SIZE.sm} uniProps={iconForegroundMutedMapping} />
 );
 const attachmentGithubPrIcon = (
   <ThemedAttachmentGitPullRequest size={ICON_SIZE.sm} uniProps={iconForegroundMutedMapping} />

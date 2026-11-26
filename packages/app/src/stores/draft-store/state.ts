@@ -111,6 +111,13 @@ export const UserComposerAttachmentSchema: z.ZodType<UserComposerAttachment> = z
     z.strictObject({ kind: z.literal("forge_issue"), item: IssueItemSchema }),
     z.strictObject({ kind: z.literal("forge_change_request"), item: ChangeRequestItemSchema }),
     z.strictObject({ kind: z.literal("github_issue"), item: IssueItemSchema }),
+    z.strictObject({
+      kind: z.literal("wework_message"),
+      id: z.string().min(1),
+      title: z.string(),
+      subtitle: z.string(),
+      text: z.string(),
+    }),
     PluginResourceComposerAttachmentSchema,
     z.strictObject({
       kind: z.literal("github_pr"),

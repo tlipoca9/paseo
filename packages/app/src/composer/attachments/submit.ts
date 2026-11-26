@@ -65,6 +65,25 @@ export function splitComposerAttachmentsForSubmit(
       continue;
     }
 
+    if (attachment.kind === "wework_message") {
+      agentAttachments.push({
+        type: "text",
+        mimeType: "text/plain",
+        title: attachment.title,
+        text: attachment.text,
+        externalResource: {
+          provider: "wework",
+          providerLabel: "企业微信",
+          resourceType: "message",
+          id: attachment.id,
+          identifier: attachment.subtitle,
+          title: attachment.title,
+          url: "",
+        },
+      });
+      continue;
+    }
+
     if (isWorkspaceAttachment(attachment)) {
       if (attachment.kind === "browser_element" && attachment.attachment.screenshot) {
         images.push(attachment.attachment.screenshot);

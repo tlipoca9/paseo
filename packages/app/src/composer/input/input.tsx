@@ -89,10 +89,11 @@ import { useComposerHeight } from "./height";
 import { ComposerInputPresentation } from "./presentation";
 import { resolveComposerInputMode, type ComposerInputMode } from "@/composer/input-mode";
 import {
+  handleWeWorkClipboardPaste,
   pasteInternalLinkHintedText,
   pasteLinkedClipboardText,
-  pasteWeWorkClipboardText,
 } from "@/composer/pasted-text";
+import type { WeWorkMessageComposerAttachment } from "@/attachments/types";
 import type { NativePastedFile } from "@/composer/native-pasted-image";
 import {
   EditingTextInput,
@@ -177,6 +178,11 @@ export interface MessageInputProps {
   attachmentMenuItems: AttachmentMenuItem[];
   onAttachButtonRef?: (node: View | null) => void;
   onAddImages?: (images: ImageAttachment[]) => void;
+  onAddWeWorkAttachment?: (attachment: WeWorkMessageComposerAttachment) => void;
+  onUpdateWeWorkAttachment?: (
+    id: string,
+    update: { title: string; subtitle: string; text: string },
+  ) => void;
   onPasteImages?: (files: readonly NativePastedFile[]) => void;
   client: DaemonClient | null;
   /** Dictation start gate from host runtime (socket connected + directory ready). */
@@ -528,6 +534,10 @@ interface PasteEffectArgs {
   isDictating: boolean;
   isRealtimeVoiceForCurrentAgent: boolean;
   onAddImages: ((images: ImageAttachment[]) => void) | undefined;
+  onAddWeWorkAttachment: ((attachment: WeWorkMessageComposerAttachment) => void) | undefined;
+  onUpdateWeWorkAttachment:
+    | ((id: string, update: { title: string; subtitle: string; text: string }) => void)
+    | undefined;
 }
 
 function usePasteEffect(args: PasteEffectArgs): void {
@@ -538,6 +548,8 @@ function usePasteEffect(args: PasteEffectArgs): void {
     isDictating,
     isRealtimeVoiceForCurrentAgent,
     onAddImages,
+    onAddWeWorkAttachment,
+    onUpdateWeWorkAttachment,
   } = args;
 
   useEffect(() => {
@@ -552,7 +564,13 @@ function usePasteEffect(args: PasteEffectArgs): void {
       const imageFiles = collectImageFilesFromClipboardData(event.clipboardData);
       if (imageFiles.length === 0) {
         if (
-          pasteWeWorkClipboardText(textarea, event.clipboardData) ||
+          (onAddWeWorkAttachment &&
+            onUpdateWeWorkAttachment &&
+            handleWeWorkClipboardPaste(event.clipboardData, {
+              onAddAttachment: onAddWeWorkAttachment,
+              onUpdateAttachment: onUpdateWeWorkAttachment,
+              isDisposed: () => disposed,
+            })) ||
           pasteLinkedClipboardText(textarea, event.clipboardData) ||
           pasteInternalLinkHintedText(textarea, event.clipboardData)
         ) {
@@ -580,7 +598,16 @@ function usePasteEffect(args: PasteEffectArgs): void {
       disposed = true;
       textarea.removeEventListener?.("paste", handlePaste);
     };
-  }, [disabled, textarea, isConnected, isDictating, isRealtimeVoiceForCurrentAgent, onAddImages]);
+  }, [
+    disabled,
+    textarea,
+    isConnected,
+    isDictating,
+    isRealtimeVoiceForCurrentAgent,
+    onAddImages,
+    onAddWeWorkAttachment,
+    onUpdateWeWorkAttachment,
+  ]);
 }
 
 function useAutoFocusOnWebEffect(
@@ -1201,6 +1228,10 @@ interface ResolvedMessageInputProps {
   attachmentMenuItems: AttachmentMenuItem[];
   onAttachButtonRef: ((node: View | null) => void) | undefined;
   onAddImages: ((images: ImageAttachment[]) => void) | undefined;
+  onAddWeWorkAttachment: ((attachment: WeWorkMessageComposerAttachment) => void) | undefined;
+  onUpdateWeWorkAttachment:
+    | ((id: string, update: { title: string; subtitle: string; text: string }) => void)
+    | undefined;
   onPasteImages: ((files: readonly NativePastedFile[]) => void) | undefined;
   client: DaemonClient | null;
   isReadyForDictation: boolean | undefined;
@@ -1249,6 +1280,8 @@ function resolveMessageInputProps(props: MessageInputProps): ResolvedMessageInpu
     attachmentMenuItems: props.attachmentMenuItems,
     onAttachButtonRef: props.onAttachButtonRef,
     onAddImages: props.onAddImages,
+    onAddWeWorkAttachment: props.onAddWeWorkAttachment,
+    onUpdateWeWorkAttachment: props.onUpdateWeWorkAttachment,
     onPasteImages: props.onPasteImages,
     client: props.client,
     isReadyForDictation: props.isReadyForDictation,
@@ -1331,6 +1364,8 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
       attachmentMenuItems,
       onAttachButtonRef,
       onAddImages,
+      onAddWeWorkAttachment,
+      onUpdateWeWorkAttachment,
       onPasteImages,
       client,
       isReadyForDictation,
@@ -1884,6 +1919,8 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
       isDictating,
       isRealtimeVoiceForCurrentAgent,
       onAddImages,
+      onAddWeWorkAttachment,
+      onUpdateWeWorkAttachment,
     });
 
     const handleSelectionChange = useCallback(

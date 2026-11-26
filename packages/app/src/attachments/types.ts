@@ -103,10 +103,19 @@ export interface WorkspaceFileComposerAttachment {
   selection: WorkspaceFileSelection;
 }
 
+export interface WeWorkMessageComposerAttachment {
+  kind: "wework_message";
+  id: string;
+  title: string;
+  subtitle: string;
+  text: string;
+}
+
 export type UserComposerAttachment =
   | { kind: "image"; metadata: AttachmentMetadata }
   | { kind: "file"; attachment: UploadedFileAttachment }
   | WorkspaceFileComposerAttachment
+  | WeWorkMessageComposerAttachment
   | PluginResourceComposerAttachment
   | { kind: "forge_issue"; item: ForgeSearchItem }
   | { kind: "forge_change_request"; item: ForgeSearchItem }

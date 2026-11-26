@@ -117,6 +117,10 @@ contextBridge.exposeInMainWorld("paseoDesktop", {
   clipboard: {
     readWeWorkPaste: (plainText?: string) =>
       ipcRenderer.sendSync("paseo:clipboard:read-wework", plainText) as string | null,
+    readWeWorkData: (plainText?: string) =>
+      ipcRenderer.sendSync("paseo:clipboard:read-wework-data", plainText) as unknown,
+    resolveWeWorkPaste: (input: unknown) =>
+      ipcRenderer.invoke("paseo:clipboard:resolve-wework", input) as Promise<unknown>,
   },
   menu: {
     showContextMenu: (input?: Record<string, unknown>) =>

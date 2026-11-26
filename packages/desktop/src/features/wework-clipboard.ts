@@ -1,7 +1,13 @@
+import { execFile } from "node:child_process";
+
 const BPLIST_HEADER = "bplist00";
 const BPLIST_TRAILER_SIZE = 32;
 const MAX_BPLIST_OBJECTS = 100_000;
 const MAX_PREVIEW_CHARS = 400;
+const MAX_CARD_TITLE_CHARS = 60;
+const WXWORK_RESOLVE_TIMEOUT_MS = 1500;
+const WXWORK_MAX_BUFFER_BYTES = 2 * 1024 * 1024;
+const MAX_QUERY_SNIPPET_CHARS = 80;
 
 export const WEWORK_PASTEBOARD_REPORT_KEY = "WWKPrivatePBDataReportKey";
 export const WEWORK_PASTEBOARD_RICH_KEY = "WWKPrivatePBDataKey_Rich";
@@ -21,6 +27,35 @@ export interface WeWorkClipboardMessage {
   payload?: Uint8Array;
   previewText?: string;
 }
+
+export type WeWorkClipboardMessageSummary = Omit<WeWorkClipboardMessage, "payload">;
+
+export interface WeWorkClipboardMessagesData {
+  kind: "messages";
+  title: string;
+  subtitle: string;
+  text: string;
+  messages: WeWorkClipboardMessageSummary[];
+  plainText: string;
+}
+
+export interface WeWorkClipboardPartialData {
+  kind: "partial";
+  plainText: string;
+}
+
+export type WeWorkClipboardData = WeWorkClipboardMessagesData | WeWorkClipboardPartialData;
+
+export interface ResolvedWeWorkPaste {
+  title: string;
+  subtitle: string;
+  text: string;
+}
+
+export type WxWorkCliRunner = (
+  args: readonly string[],
+  timeoutMs: number,
+) => Promise<string | null>;
 
 export interface DesktopWeWorkClipboardReader {
   readBuffer(format: string): Buffer;
@@ -632,6 +667,536 @@ export async function readWeWorkClipboardPasteAsync(
     if (hasValidEmptyReport || hasRich) {
       return formatWeWorkPartialSelectionPaste(effectivePlainText);
     }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+function toMessageSummary(message: WeWorkClipboardMessage): WeWorkClipboardMessageSummary {
+  const { payload: _payload, ...summary } = message;
+  return summary;
+}
+
+function truncateCardTitle(raw: string, fallback = "企业微信消息"): string {
+  const firstLine =
+    raw
+      .split(/\r?\n/)
+      .map((line) => line.replace(/\s+/g, " ").trim())
+      .find((line) => line.length > 0) ?? "";
+  if (!firstLine) return fallback;
+  if (firstLine.length <= MAX_CARD_TITLE_CHARS) return firstLine;
+  return `${firstLine.slice(0, MAX_CARD_TITLE_CHARS - 1)}…`;
+}
+
+function formatShortTime(value: number | string | undefined): string | null {
+  if (typeof value === "number") {
+    if (!Number.isFinite(value) || value <= 0) return null;
+    const iso = new Date(value * 1000).toISOString();
+    return `${iso.slice(0, 10)} ${iso.slice(11, 16)}`;
+  }
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (!trimmed) return null;
+    const match = trimmed.match(/^(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2})/);
+    if (match) return `${match[1]} ${match[2]}`;
+    const parsedNum = Number(trimmed);
+    if (Number.isFinite(parsedNum) && parsedNum > 0) {
+      return formatShortTime(parsedNum);
+    }
+    return trimmed;
+  }
+  return null;
+}
+
+function buildWeWorkMessagesData(
+  messages: readonly WeWorkClipboardMessage[],
+  plainText: string,
+): WeWorkClipboardMessagesData {
+  const trimmedPlainText = plainText.trim();
+  const primary = messages[0]!;
+  const title =
+    messages.length === 1
+      ? truncateCardTitle(trimmedPlainText || primary.previewText || "")
+      : `${messages.length} 条企业微信消息`;
+
+  const shortTime = formatShortTime(primary.sendTime);
+  const subtitle = [primary.conversationId, shortTime].filter(Boolean).join(" · ");
+
+  const lines: string[] = [];
+  if (messages.length === 1) {
+    const body = trimmedPlainText || primary.previewText || "[富文本/卡片消息]";
+    lines.push(quoteLines(body));
+    lines.push("");
+    lines.push(`- ${formatMessageMeta(primary)}`);
+  } else if (trimmedPlainText) {
+    lines.push(quoteLines(trimmedPlainText));
+    lines.push("");
+    for (const msg of messages) {
+      lines.push(`- ${formatMessageMeta(msg)}`);
+    }
+  } else {
+    for (const msg of messages) {
+      const preview = msg.previewText || "[富文本/卡片消息]";
+      lines.push(`- ${preview} (${formatMessageMeta(msg)})`);
+    }
+  }
+  lines.push("");
+  lines.push("如需上下文，可用 `wxwork` 按 `conversation_id` 和 `send_time` 查询。");
+
+  return {
+    kind: "messages",
+    title,
+    subtitle,
+    text: lines.join("\n"),
+    messages: messages.map(toMessageSummary),
+    plainText,
+  };
+}
+
+export function readWeWorkClipboardData(
+  clipboardReader: DesktopWeWorkClipboardReader,
+  platform: string,
+  plainText?: string,
+): WeWorkClipboardData | null {
+  if (platform !== "darwin") return null;
+  try {
+    const rawReport = clipboardReader.readBuffer(WEWORK_PASTEBOARD_REPORT_KEY);
+    const hasReport = Boolean(rawReport && rawReport.length > 0);
+    const parsedReport = hasReport ? parseBinaryPlist(rawReport) : null;
+    const messages = hasReport ? decodeWeWorkClipboardBuffer(rawReport) : [];
+
+    const effectivePlainText =
+      plainText !== undefined && plainText.length > 0
+        ? plainText
+        : (clipboardReader.readText?.() ?? "");
+
+    if (messages.length > 0) {
+      return buildWeWorkMessagesData(messages, effectivePlainText);
+    }
+
+    const rawRich = clipboardReader.readBuffer(WEWORK_PASTEBOARD_RICH_KEY);
+    const hasRich = Boolean(rawRich && rawRich.length > 0);
+    const hasValidEmptyReport = Array.isArray(parsedReport) && parsedReport.length === 0;
+    if ((hasValidEmptyReport || hasRich) && effectivePlainText.trim().length > 0) {
+      return { kind: "partial", plainText: effectivePlainText };
+    }
+
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+export async function readWeWorkClipboardDataAsync(
+  clipboard: ElectronAsyncClipboardLike | DesktopWeWorkClipboardReader,
+  platform: string,
+  plainText?: string,
+): Promise<WeWorkClipboardData | null> {
+  if (platform !== "darwin") return null;
+  if (isSyncClipboardReader(clipboard)) {
+    return readWeWorkClipboardData(clipboard, platform, plainText);
+  }
+  try {
+    const reportMime = osClipboardMimeType(WEWORK_PASTEBOARD_REPORT_KEY);
+    const richMime = osClipboardMimeType(WEWORK_PASTEBOARD_RICH_KEY);
+    const [hasReport, hasRich] = await Promise.all([
+      clipboard.has(reportMime),
+      clipboard.has(richMime),
+    ]);
+    if (!hasReport && !hasRich) return null;
+
+    const items = await clipboard.read();
+    const rawReport = hasReport
+      ? await readOsClipboardFormatBytes(items, WEWORK_PASTEBOARD_REPORT_KEY)
+      : null;
+    const parsedReport = rawReport ? parseBinaryPlist(rawReport) : null;
+    const messages = rawReport ? decodeWeWorkClipboardBuffer(rawReport) : [];
+
+    const effectivePlainText =
+      plainText !== undefined && plainText.length > 0
+        ? plainText
+        : await clipboard.readText().catch(() => "");
+
+    if (messages.length > 0) {
+      return buildWeWorkMessagesData(messages, effectivePlainText);
+    }
+
+    const hasValidEmptyReport = Array.isArray(parsedReport) && parsedReport.length === 0;
+    if ((hasValidEmptyReport || hasRich) && effectivePlainText.trim().length > 0) {
+      return { kind: "partial", plainText: effectivePlainText };
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+export function buildWxWorkQuerySnippet(plainText: string): string | null {
+  const trimmed = plainText.trim();
+  if (!trimmed) return null;
+
+  if (/^https?:\/\/\S+$/i.test(trimmed)) {
+    const cleanedUrl = trimmed.replace(/[),.;!?]+$/, "");
+    if (cleanedUrl.length <= MAX_QUERY_SNIPPET_CHARS) {
+      return cleanedUrl.length >= 2 ? cleanedUrl : null;
+    }
+    try {
+      const parsed = new URL(cleanedUrl);
+      const compact = `${parsed.host}${parsed.pathname}`.replace(/\/+$/, "");
+      const candidate = compact.length >= 2 ? compact : cleanedUrl;
+      return candidate.slice(0, MAX_QUERY_SNIPPET_CHARS);
+    } catch {
+      return cleanedUrl.slice(0, MAX_QUERY_SNIPPET_CHARS);
+    }
+  }
+
+  const firstLine =
+    trimmed
+      .split(/\r?\n/)
+      .map((line) => line.replace(/\s+/g, " ").trim())
+      .find((line) => line.length > 0) ?? "";
+  if (firstLine.length < 2) return null;
+  return firstLine.slice(0, MAX_QUERY_SNIPPET_CHARS).trim();
+}
+
+interface WxWorkRecord {
+  text?: string;
+  ref?: string;
+  conversationId?: string;
+  conversationName?: string;
+  senderName?: string;
+  senderId?: string;
+  sendTime?: string | number;
+  serverId?: string;
+  sequence?: string;
+}
+
+function asNonEmptyString(value: unknown): string | undefined {
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    return trimmed.length > 0 ? trimmed : undefined;
+  }
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return String(value);
+  }
+  return undefined;
+}
+
+function parseWxWorkRecord(raw: unknown): WxWorkRecord | null {
+  if (!raw || typeof raw !== "object") return null;
+  const obj = raw as Record<string, unknown>;
+  const text = asNonEmptyString(obj.text) ?? asNonEmptyString(obj.content);
+  const ref = asNonEmptyString(obj.ref);
+  const conversationId =
+    asNonEmptyString(obj.conversation_id) ??
+    asNonEmptyString(obj.chat_id) ??
+    asNonEmptyString(obj.session_id);
+  const conversationName =
+    asNonEmptyString(obj.conversation_name) ??
+    asNonEmptyString(obj.chat_name) ??
+    asNonEmptyString(obj.session_name) ??
+    asNonEmptyString(obj.conversation) ??
+    asNonEmptyString(obj.chat);
+  const senderName =
+    asNonEmptyString(obj.sender_name) ?? asNonEmptyString(obj.sender);
+  const senderId = asNonEmptyString(obj.sender_id);
+  const rawSendTime = obj.send_time ?? obj.timestamp ?? obj.created_at;
+  const sendTime =
+    typeof rawSendTime === "number" || typeof rawSendTime === "string"
+      ? rawSendTime
+      : undefined;
+  const serverId = asNonEmptyString(obj.server_id);
+  const sequence = asNonEmptyString(obj.sequence);
+  return {
+    ...(text ? { text } : {}),
+    ...(ref ? { ref } : {}),
+    ...(conversationId ? { conversationId } : {}),
+    ...(conversationName ? { conversationName } : {}),
+    ...(senderName ? { senderName } : {}),
+    ...(senderId ? { senderId } : {}),
+    ...(sendTime !== undefined ? { sendTime } : {}),
+    ...(serverId ? { serverId } : {}),
+    ...(sequence ? { sequence } : {}),
+  };
+}
+
+function parseWxWorkQueryItems(stdout: string): WxWorkRecord[] {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(stdout);
+  } catch {
+    return [];
+  }
+  if (!parsed || typeof parsed !== "object") return [];
+  const envelope = parsed as { ok?: unknown; data?: Record<string, unknown> };
+  if (envelope.ok !== true || !envelope.data || typeof envelope.data !== "object") {
+    return [];
+  }
+  const rawItems = Array.isArray(envelope.data.messages)
+    ? envelope.data.messages
+    : Array.isArray(envelope.data.items)
+      ? envelope.data.items
+      : [];
+  const records: WxWorkRecord[] = [];
+  for (const item of rawItems) {
+    const rec = parseWxWorkRecord(item);
+    if (rec) records.push(rec);
+  }
+  return records;
+}
+
+function parseWxWorkSessionName(stdout: string, conversationId: string): string | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(stdout);
+  } catch {
+    return null;
+  }
+  if (!parsed || typeof parsed !== "object") return null;
+  const envelope = parsed as { ok?: unknown; data?: Record<string, unknown> };
+  if (envelope.ok !== true || !envelope.data || typeof envelope.data !== "object") {
+    return null;
+  }
+  const rawSessions = Array.isArray(envelope.data.sessions)
+    ? envelope.data.sessions
+    : Array.isArray(envelope.data.items)
+      ? envelope.data.items
+      : [];
+  for (const entry of rawSessions) {
+    if (!entry || typeof entry !== "object") continue;
+    const obj = entry as Record<string, unknown>;
+    const id =
+      asNonEmptyString(obj.conversation_id) ??
+      asNonEmptyString(obj.chat_id) ??
+      asNonEmptyString(obj.id);
+    if (id !== conversationId) continue;
+    const name =
+      asNonEmptyString(obj.name) ??
+      asNonEmptyString(obj.conversation_name) ??
+      asNonEmptyString(obj.title);
+    if (name) return name;
+  }
+  return null;
+}
+
+function normalizeForMatch(text: string): string {
+  return text.replace(/\s+/g, " ").trim().toLowerCase();
+}
+
+function sendTimeEpoch(value: number | string | undefined): number {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string") {
+    const num = Number(value);
+    if (Number.isFinite(num)) return num;
+    const ms = Date.parse(value);
+    if (Number.isFinite(ms)) return Math.floor(ms / 1000);
+  }
+  return 0;
+}
+
+function buildResolvedCardFromRecord(
+  record: WxWorkRecord,
+  fallbackBody: string,
+  fallbackMeta?: WeWorkClipboardMessageSummary,
+): ResolvedWeWorkPaste {
+  const body = record.text || fallbackBody || "[富文本/卡片消息]";
+  const title = truncateCardTitle(body);
+  const convLabel = record.conversationName || record.conversationId || fallbackMeta?.conversationId;
+  const senderLabel = record.senderName || record.senderId || fallbackMeta?.senderId;
+  const shortTime = formatShortTime(record.sendTime ?? fallbackMeta?.sendTime);
+  const subtitle = [convLabel, senderLabel, shortTime].filter(Boolean).join(" · ");
+
+  const metaParts: string[] = [];
+  if (record.conversationName) metaParts.push(`conversation: ${record.conversationName}`);
+  const convId = record.conversationId ?? fallbackMeta?.conversationId;
+  if (convId) metaParts.push(`conversation_id: ${convId}`);
+  if (record.ref) metaParts.push(`ref: ${record.ref}`);
+  if (record.senderName) {
+    const sId = record.senderId ?? fallbackMeta?.senderId;
+    metaParts.push(
+      sId && sId !== record.senderName
+        ? `sender: ${record.senderName} (${sId})`
+        : `sender: ${record.senderName}`,
+    );
+  } else if (record.senderId ?? fallbackMeta?.senderId) {
+    metaParts.push(`sender_id: ${record.senderId ?? fallbackMeta?.senderId}`);
+  }
+  const serverId = record.serverId ?? fallbackMeta?.serverId;
+  if (serverId) metaParts.push(`server_id: ${serverId}`);
+  const sequence = record.sequence ?? fallbackMeta?.sequence;
+  if (sequence) metaParts.push(`sequence: ${sequence}`);
+  if (record.sendTime !== undefined) {
+    metaParts.push(
+      `send_time: ${typeof record.sendTime === "number" ? formatSendTime(record.sendTime) : record.sendTime}`,
+    );
+  } else if (fallbackMeta?.sendTime !== undefined) {
+    metaParts.push(`send_time: ${formatSendTime(fallbackMeta.sendTime)}`);
+  }
+
+  const lines = [
+    quoteLines(body),
+    "",
+    `- ${metaParts.join(", ")}`,
+    "",
+    "如需上下文，可用 `wxwork` 按 `conversation_id` / `ref` 查询。",
+  ];
+
+  return {
+    title,
+    subtitle,
+    text: lines.join("\n"),
+  };
+}
+
+const defaultWxWorkRunner: WxWorkCliRunner = (args, timeoutMs) =>
+  new Promise((resolve) => {
+    let settled = false;
+    const finish = (value: string | null) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(value);
+    };
+
+    const child = execFile(
+      "wxwork",
+      [...args],
+      {
+        timeout: timeoutMs,
+        windowsHide: true,
+        maxBuffer: WXWORK_MAX_BUFFER_BYTES,
+      },
+      (error, stdout) => {
+        if (error || !stdout) {
+          finish(null);
+          return;
+        }
+        finish(stdout);
+      },
+    );
+
+    const timer = setTimeout(() => {
+      try {
+        child.kill();
+      } catch {
+        // Ignore kill failures.
+      }
+      finish(null);
+    }, timeoutMs);
+  });
+
+/**
+ * Best-effort local `wxwork` enrichment for pasted WeWork messages/selections.
+ * Never throws and enforces a strict timeout so pasting is never blocked.
+ */
+export async function resolveWeWorkPaste(
+  input: WeWorkClipboardData,
+  runner: WxWorkCliRunner = defaultWxWorkRunner,
+  timeoutMs = WXWORK_RESOLVE_TIMEOUT_MS,
+): Promise<ResolvedWeWorkPaste | null> {
+  const deadline = Date.now() + timeoutMs;
+  const remainingMs = () => Math.max(0, deadline - Date.now());
+
+  try {
+    if (input.kind === "partial") {
+      const snippet = buildWxWorkQuerySnippet(input.plainText);
+      if (!snippet) return null;
+      const stdout = await runner(
+        ["--format", "json", "messages", "query", snippet, "-n", "5"],
+        remainingMs(),
+      );
+      if (!stdout) return null;
+
+      const items = parseWxWorkQueryItems(stdout);
+      if (items.length === 0) return null;
+
+      const normalizedPlain = normalizeForMatch(input.plainText);
+      const normalizedSnippet = normalizeForMatch(snippet);
+      const matching = items.filter((item) => {
+        if (!item.text) return false;
+        const normalizedText = normalizeForMatch(item.text);
+        return (
+          normalizedText.includes(normalizedPlain) || normalizedText.includes(normalizedSnippet)
+        );
+      });
+      if (matching.length === 0) return null;
+
+      matching.sort((a, b) => sendTimeEpoch(b.sendTime) - sendTimeEpoch(a.sendTime));
+      return buildResolvedCardFromRecord(matching[0]!, input.plainText);
+    }
+
+    if (input.kind === "messages") {
+      const primary = input.messages[0];
+      if (!primary) return null;
+
+      const snippet = buildWxWorkQuerySnippet(input.plainText || primary.previewText || "");
+      const queryArgs = ["--format", "json", "messages", "query"];
+      if (snippet) queryArgs.push(snippet);
+      queryArgs.push("--in", primary.conversationId, "-n", "5");
+
+      const stdout = await runner(queryArgs, remainingMs());
+      const items = stdout ? parseWxWorkQueryItems(stdout) : [];
+
+      const exactMatch =
+        items.find(
+          (item) =>
+            (primary.serverId && item.serverId === primary.serverId) ||
+            (primary.sequence && item.sequence === primary.sequence),
+        ) ??
+        items.find((item) => {
+          if (!snippet || !item.text) return false;
+          return normalizeForMatch(item.text).includes(normalizeForMatch(snippet));
+        }) ??
+        null;
+
+      let conversationName =
+        exactMatch?.conversationName ??
+        items.find((item) => item.conversationName)?.conversationName ??
+        null;
+
+      if (!conversationName && remainingMs() >= 300) {
+        const sessionsStdout = await runner(
+          ["--format", "json", "sessions", "-n", "50"],
+          remainingMs(),
+        );
+        if (sessionsStdout) {
+          conversationName = parseWxWorkSessionName(sessionsStdout, primary.conversationId);
+        }
+      }
+
+      if (input.messages.length === 1 && exactMatch) {
+        const enriched: WxWorkRecord = {
+          ...exactMatch,
+          ...(conversationName && !exactMatch.conversationName ? { conversationName } : {}),
+        };
+        if (enriched.conversationName || enriched.senderName || enriched.ref) {
+          return buildResolvedCardFromRecord(
+            enriched,
+            input.plainText || primary.previewText || "",
+            primary,
+          );
+        }
+      }
+
+      if (conversationName) {
+        const shortTime = formatShortTime(primary.sendTime);
+        const senderLabel =
+          input.messages.length === 1
+            ? (exactMatch?.senderName ?? undefined)
+            : undefined;
+        const subtitle = [conversationName, senderLabel, shortTime].filter(Boolean).join(" · ");
+        const text = `会话: ${conversationName}\n\n${input.text}`;
+        return {
+          title: input.title,
+          subtitle,
+          text,
+        };
+      }
+
+      return null;
+    }
+
     return null;
   } catch {
     return null;

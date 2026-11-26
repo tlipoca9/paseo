@@ -341,6 +341,9 @@ export interface OpenComposerAttachmentInput {
   setLightboxMetadata: (metadata: AttachmentMetadata) => void;
   openWorkspaceAttachment: (input: { attachment: ComposerAttachment }) => boolean;
   openExternalUrl: (url: string) => void;
+  openWeWorkAttachment?: (
+    attachment: Extract<ComposerAttachment, { kind: "wework_message" }>,
+  ) => void;
 }
 
 export function openComposerAttachment(input: OpenComposerAttachmentInput): void {
@@ -349,6 +352,10 @@ export function openComposerAttachment(input: OpenComposerAttachmentInput): void
     return;
   }
   if (input.attachment.kind === "file" || input.attachment.kind === "workspace_file") {
+    return;
+  }
+  if (input.attachment.kind === "wework_message") {
+    input.openWeWorkAttachment?.(input.attachment);
     return;
   }
   if (isWorkspaceAttachment(input.attachment)) {

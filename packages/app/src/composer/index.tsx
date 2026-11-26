@@ -57,6 +57,7 @@ import {
   GitPullRequest,
   Image as ImageIcon,
   ClipboardPaste,
+  MessageSquare,
   Paperclip,
 } from "lucide-react-native";
 import * as Clipboard from "expo-clipboard";
@@ -152,6 +153,7 @@ import type {
   AttachmentMetadata,
   ComposerAttachment,
   UserComposerAttachment,
+  WeWorkMessageComposerAttachment,
   WorkspaceFileComposerAttachment,
   WorkspaceComposerAttachment,
 } from "@/attachments/types";
@@ -173,6 +175,7 @@ import {
   AttachmentThumbnail,
 } from "@/components/attachment-pill";
 import { AttachmentLightbox, type ImageLightboxSource } from "@/components/attachment-lightbox";
+import { AdaptiveModalSheet } from "@/components/adaptive-modal-sheet";
 import { openExternalUrl } from "@/utils/open-external-url";
 import { useIsDictationReady } from "@/hooks/use-is-dictation-ready";
 import { useForgeSearchQuery } from "@/git/use-forge-search-query";
@@ -504,6 +507,19 @@ function renderComposerAttachmentPill(args: RenderComposerAttachmentPillArgs): R
         onRemove={onRemove}
         openLabel={labels.openGithub}
         removeLabel={labels.removeGithub}
+      />
+    );
+  }
+  if (attachment.kind === "wework_message") {
+    return (
+      <WeWorkMessageAttachmentPill
+        key={`wework:${attachment.id}`}
+        attachment={attachment}
+        index={index}
+        disabled={disabled}
+        onOpen={onOpen}
+        onRemove={onRemove}
+        removeLabel={labels.removeFile}
       />
     );
   }
@@ -904,6 +920,48 @@ function WorkspaceFileAttachmentPill({
         icon={filePillIcon}
         title={fileName}
         subtitle={getWorkspaceFileAttachmentSubtitle(attachment)}
+      />
+    </AttachmentPill>
+  );
+}
+
+interface WeWorkMessageAttachmentPillProps {
+  attachment: WeWorkMessageComposerAttachment;
+  index: number;
+  disabled: boolean;
+  onOpen: (attachment: ComposerAttachment) => void;
+  onRemove: (index: number) => void;
+  removeLabel: string;
+}
+
+function WeWorkMessageAttachmentPill({
+  attachment,
+  index,
+  disabled,
+  onOpen,
+  onRemove,
+  removeLabel,
+}: WeWorkMessageAttachmentPillProps) {
+  const handleOpen = useCallback(() => {
+    onOpen(attachment);
+  }, [attachment, onOpen]);
+  const handleRemove = useCallback(() => {
+    onRemove(index);
+  }, [index, onRemove]);
+  const subtitle = attachment.subtitle ? `企业微信 · ${attachment.subtitle}` : "企业微信";
+  return (
+    <AttachmentPill
+      testID="composer-wework-message-attachment-pill"
+      onOpen={handleOpen}
+      onRemove={handleRemove}
+      openAccessibilityLabel={attachment.title}
+      removeAccessibilityLabel={removeLabel}
+      disabled={disabled}
+    >
+      <AttachmentLabel
+        icon={weworkMessagePillIcon}
+        title={attachment.title}
+        subtitle={subtitle}
       />
     </AttachmentPill>
   );
@@ -1645,6 +1703,40 @@ function ComposerContentImpl({
     [setSelectedAttachments],
   );
 
+  const addWeWorkAttachment = useCallback(
+    (attachment: WeWorkMessageComposerAttachment) => {
+      setSelectedAttachments((prev) => [...prev, attachment]);
+    },
+    [setSelectedAttachments],
+  );
+
+  const updateWeWorkAttachment = useCallback(
+    (id: string, update: { title: string; subtitle: string; text: string }) => {
+      setSelectedAttachments((prev) => {
+        const index = prev.findIndex(
+          (item) => item.kind === "wework_message" && item.id === id,
+        );
+        if (index === -1) return prev;
+        const existing = prev[index] as WeWorkMessageComposerAttachment;
+        const next = [...prev];
+        next[index] = {
+          ...existing,
+          title: update.title,
+          subtitle: update.subtitle,
+          text: update.text,
+        };
+        return next;
+      });
+    },
+    [setSelectedAttachments],
+  );
+
+  const [inspectedWeWorkAttachment, setInspectedWeWorkAttachment] =
+    useState<WeWorkMessageComposerAttachment | null>(null);
+  const handleCloseWeWorkPreview = useCallback(() => {
+    setInspectedWeWorkAttachment(null);
+  }, []);
+
   const focusInput = useCallback(() => {
     if (isNative) return;
     focusWithRetries({
@@ -2022,6 +2114,7 @@ function ComposerContentImpl({
         attachment,
         setLightboxMetadata,
         openWorkspaceAttachment: openAttachment,
+        openWeWorkAttachment: setInspectedWeWorkAttachment,
         openExternalUrl: (url) => {
           void openExternalUrl(url);
         },
@@ -2584,6 +2677,27 @@ function ComposerContentImpl({
         }
       >
         <AttachmentLightbox source={lightboxSource} onClose={handleLightboxClose} />
+        <AdaptiveModalSheet
+          visible={inspectedWeWorkAttachment !== null}
+          onClose={handleCloseWeWorkPreview}
+          testID="composer-wework-preview-modal"
+          header={
+            inspectedWeWorkAttachment
+              ? {
+                  title: inspectedWeWorkAttachment.title,
+                  subtitle: inspectedWeWorkAttachment.subtitle
+                    ? `企业微信 · ${inspectedWeWorkAttachment.subtitle}`
+                    : "企业微信",
+                }
+              : undefined
+          }
+        >
+          {inspectedWeWorkAttachment ? (
+            <Text selectable style={styles.weworkPreviewText}>
+              {inspectedWeWorkAttachment.text}
+            </Text>
+          ) : null}
+        </AdaptiveModalSheet>
         {/* Input area */}
         <View
           style={inputAreaContainerStyle}
@@ -2632,6 +2746,8 @@ function ComposerContentImpl({
                   attachmentMenuItems={attachmentMenuItems}
                   onAttachButtonRef={handleAttachButtonRef}
                   onAddImages={addImages}
+                  onAddWeWorkAttachment={addWeWorkAttachment}
+                  onUpdateWeWorkAttachment={updateWeWorkAttachment}
                   onPasteImages={handleNativePasteImages}
                   client={client}
                   isReadyForDictation={isDictationReady}
@@ -2846,6 +2962,11 @@ const styles = StyleSheet.create((theme: Theme) => ({
   queueSendButton: {
     backgroundColor: theme.colors.accent,
   },
+  weworkPreviewText: {
+    color: theme.colors.foreground,
+    fontSize: theme.fontSize.sm,
+    lineHeight: 20,
+  },
 })) as unknown as Record<string, object>;
 
 const ThemedAttachmentSpinner = withUnistyles(LoadingSpinner);
@@ -2858,6 +2979,7 @@ const ThemedPaperclip = withUnistyles(Paperclip);
 const ThemedImageIcon = withUnistyles(ImageIcon);
 const ThemedClipboardPaste = withUnistyles(ClipboardPaste);
 const ThemedFileText = withUnistyles(FileText);
+const ThemedMessageSquare = withUnistyles(MessageSquare);
 const iconForegroundMapping = (theme: Theme) => ({ color: theme.colors.foreground });
 const iconForegroundMutedMapping = (theme: Theme) => ({ color: theme.colors.foregroundMuted });
 const iconAccentForegroundMapping = (theme: Theme) => ({ color: theme.colors.accentForeground });
@@ -2875,6 +2997,9 @@ const githubIssuePillIcon = (
   <ThemedCircleDot size={ICON_SIZE.sm} uniProps={iconForegroundMutedMapping} />
 );
 const filePillIcon = <ThemedFileText size={ICON_SIZE.sm} uniProps={iconForegroundMutedMapping} />;
+const weworkMessagePillIcon = (
+  <ThemedMessageSquare size={ICON_SIZE.sm} uniProps={iconForegroundMutedMapping} />
+);
 
 const pendingFilePillIcon = (
   <ThemedAttachmentSpinner size={18} uniProps={iconForegroundMutedMapping} />

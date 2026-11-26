@@ -172,8 +172,41 @@ export interface DesktopInvokeBridge {
   invoke?: (command: string, args?: Record<string, unknown>) => Promise<unknown>;
 }
 
+export interface WeWorkClipboardMessageSummary {
+  serverId?: string;
+  conversationType?: number;
+  conversationId: string;
+  sequence?: string;
+  senderId?: string;
+  contentType?: number;
+  sendTime?: number;
+  previewText?: string;
+}
+
+export type WeWorkClipboardData =
+  | {
+      kind: "messages";
+      title: string;
+      subtitle: string;
+      text: string;
+      messages: WeWorkClipboardMessageSummary[];
+      plainText: string;
+    }
+  | {
+      kind: "partial";
+      plainText: string;
+    };
+
+export interface ResolvedWeWorkPaste {
+  title: string;
+  subtitle: string;
+  text: string;
+}
+
 export interface DesktopClipboardBridge {
   readWeWorkPaste?: (plainText?: string) => string | null;
+  readWeWorkData?: (plainText?: string) => WeWorkClipboardData | null;
+  resolveWeWorkPaste?: (input: WeWorkClipboardData) => Promise<ResolvedWeWorkPaste | null>;
 }
 
 export interface DesktopHostBridge {

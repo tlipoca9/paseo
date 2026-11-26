@@ -1,14 +1,19 @@
 import { describe, expect, it } from "vitest";
 import {
+  buildWxWorkQuerySnippet,
   decodeWeWorkClipboardBuffer,
   decodeWeWorkProtobufMessage,
   osClipboardMimeType,
   parseBinaryPlist,
+  readWeWorkClipboardData,
+  readWeWorkClipboardDataAsync,
   readWeWorkClipboardPaste,
   readWeWorkClipboardPasteAsync,
+  resolveWeWorkPaste,
   WEWORK_PASTEBOARD_REPORT_KEY,
   WEWORK_PASTEBOARD_RICH_KEY,
   type DesktopWeWorkClipboardReader,
+  type WxWorkCliRunner,
 } from "./wework-clipboard.js";
 
 function encodeVarint(value: bigint | number): Uint8Array {
@@ -294,5 +299,219 @@ describe("wework-clipboard", () => {
     const result = await readWeWorkClipboardPasteAsync(asyncClipboard, "darwin");
     expect(result).toContain("> 异步剪贴板测试");
     expect(result).toContain("conversation_id: R:123456");
+  });
+
+  it("reads structured WeWork clipboard data for single/multiple messages and partial selections", async () => {
+    const pb1 = Buffer.concat([
+      encodeVarintField(2, 900012345n),
+      encodeVarintField(3, 1),
+      encodeVarintField(4, 1970325000123456n),
+      encodeVarintField(5, 42),
+      encodeVarintField(6, 1688850001234567n),
+      encodeVarintField(8, 1732550400),
+      encodeBytesField(10, encodeBytesField(1, "今晚 8 点发布 v0.18")),
+    ]);
+    const singleData = readWeWorkClipboardData(
+      makeClipboardReader({ [WEWORK_PASTEBOARD_REPORT_KEY]: buildBinaryPlistDataArray([pb1]) }),
+      "darwin",
+      "今晚 8 点发布 v0.18",
+    );
+    expect(singleData).toMatchObject({
+      kind: "messages",
+      title: "今晚 8 点发布 v0.18",
+      subtitle: "R:1970325000123456 · 2024-11-25 16:00",
+      plainText: "今晚 8 点发布 v0.18",
+    });
+    if (singleData?.kind === "messages") {
+      expect(singleData.text).toContain("conversation_id: R:1970325000123456");
+      expect(singleData.text).toContain("server_id: 900012345");
+      expect(singleData.text).not.toContain("[来自企业微信");
+      expect(singleData.messages).toHaveLength(1);
+      expect("payload" in singleData.messages[0]!).toBe(false);
+    }
+
+    const pb2 = Buffer.concat([
+      encodeVarintField(2, 900012346n),
+      encodeVarintField(3, 1),
+      encodeVarintField(4, 1970325000123456n),
+      encodeVarintField(8, 1732550460),
+      encodeBytesField(10, encodeBytesField(1, "收到")),
+    ]);
+    const multiData = readWeWorkClipboardData(
+      makeClipboardReader({
+        [WEWORK_PASTEBOARD_REPORT_KEY]: buildBinaryPlistDataArray([pb1, pb2]),
+      }),
+      "darwin",
+      "",
+    );
+    expect(multiData).toMatchObject({
+      kind: "messages",
+      title: "2 条企业微信消息",
+    });
+
+    const partialData = readWeWorkClipboardData(
+      makeClipboardReader({
+        [WEWORK_PASTEBOARD_REPORT_KEY]: buildBinaryPlistDataArray([]),
+        [WEWORK_PASTEBOARD_RICH_KEY]: Buffer.from("rich"),
+      }),
+      "darwin",
+      "部分选中的报错日志片段",
+    );
+    expect(partialData).toEqual({
+      kind: "partial",
+      plainText: "部分选中的报错日志片段",
+    });
+
+    const richMime = osClipboardMimeType(WEWORK_PASTEBOARD_RICH_KEY);
+    const asyncPartial = await readWeWorkClipboardDataAsync(
+      {
+        has: async (mime: string) => mime === richMime,
+        read: async () => [],
+        readText: async () => "异步选中文本",
+      },
+      "darwin",
+    );
+    expect(asyncPartial).toEqual({
+      kind: "partial",
+      plainText: "异步选中文本",
+    });
+  });
+
+  it("builds clean wxwork query snippets from plain text and URLs", () => {
+    expect(buildWxWorkQuerySnippet("  hello   world \n second line ")).toBe("hello world");
+    expect(buildWxWorkQuerySnippet("https://git.woa.com/team/repo/merge_requests/123")).toBe(
+      "https://git.woa.com/team/repo/merge_requests/123",
+    );
+    expect(buildWxWorkQuerySnippet("a")).toBeNull();
+    expect(buildWxWorkQuerySnippet("   ")).toBeNull();
+  });
+
+  it("resolves partial WeWork paste via best-effort wxwork query and returns null on failure", async () => {
+    const mockRunner: WxWorkCliRunner = async (args) => {
+      expect(args).toEqual(["--format", "json", "messages", "query", "报错日志片段", "-n", "5"]);
+      return JSON.stringify({
+        ok: true,
+        data: {
+          messages: [
+            {
+              text: "刚才线上出现报错日志片段，请排查",
+              ref: "wxwork-message:abc123",
+              conversation_id: "R:10001",
+              conversation_name: "发布值班群",
+              sender: "张三",
+              sender_id: "168885001",
+              send_time: "2026-11-26T10:30:00+08:00",
+            },
+          ],
+        },
+      });
+    };
+
+    const resolved = await resolveWeWorkPaste(
+      { kind: "partial", plainText: "报错日志片段" },
+      mockRunner,
+    );
+    expect(resolved).toMatchObject({
+      title: "刚才线上出现报错日志片段，请排查",
+      subtitle: "发布值班群 · 张三 · 2026-11-26 10:30",
+    });
+    expect(resolved?.text).toContain("conversation_id: R:10001");
+    expect(resolved?.text).toContain("ref: wxwork-message:abc123");
+
+    // Offline / ES error / throwing runner must return null silently.
+    const offlineRunner: WxWorkCliRunner = async () =>
+      JSON.stringify({ ok: false, error: { code: "index_unavailable" } });
+    expect(
+      await resolveWeWorkPaste({ kind: "partial", plainText: "报错日志片段" }, offlineRunner),
+    ).toBeNull();
+
+    const throwingRunner: WxWorkCliRunner = async () => {
+      throw new Error("ENOENT");
+    };
+    expect(
+      await resolveWeWorkPaste({ kind: "partial", plainText: "报错日志片段" }, throwingRunner),
+    ).toBeNull();
+  });
+
+  it("enriches structured WeWork messages via wxwork query and falls back to sessions", async () => {
+    const queryRunner: WxWorkCliRunner = async (args) => {
+      if (args[2] === "messages") {
+        return JSON.stringify({
+          ok: true,
+          data: {
+            messages: [
+              {
+                text: "今晚 8 点发布 v0.18",
+                ref: "wxwork-message:m42",
+                conversation_id: "R:1970325000123456",
+                conversation_name: "AgentRuntime 研发群",
+                sender: "李四",
+                sender_id: "1688850001234567",
+                server_id: "900012345",
+                sequence: "42",
+                send_time: "2024-11-25T24:00:00+08:00",
+              },
+            ],
+          },
+        });
+      }
+      return null;
+    };
+
+    const enriched = await resolveWeWorkPaste(
+      {
+        kind: "messages",
+        title: "今晚 8 点发布 v0.18",
+        subtitle: "R:1970325000123456 · 2024-11-25 16:00",
+        text: "> 今晚 8 点发布 v0.18",
+        plainText: "今晚 8 点发布 v0.18",
+        messages: [
+          {
+            conversationId: "R:1970325000123456",
+            serverId: "900012345",
+            sequence: "42",
+            senderId: "1688850001234567",
+            sendTime: 1732550400,
+          },
+        ],
+      },
+      queryRunner,
+    );
+    expect(enriched?.subtitle).toContain("AgentRuntime 研发群");
+    expect(enriched?.subtitle).toContain("李四");
+    expect(enriched?.text).toContain("ref: wxwork-message:m42");
+
+    // Fallback to sessions when messages query returns empty.
+    const sessionsFallbackRunner: WxWorkCliRunner = async (args) => {
+      if (args[2] === "messages") {
+        return JSON.stringify({ ok: true, data: { messages: [] } });
+      }
+      if (args[2] === "sessions") {
+        return JSON.stringify({
+          ok: true,
+          data: {
+            sessions: [{ conversation_id: "R:1970325000123456", name: "核心群" }],
+          },
+        });
+      }
+      return null;
+    };
+
+    const sessionEnriched = await resolveWeWorkPaste(
+      {
+        kind: "messages",
+        title: "2 条企业微信消息",
+        subtitle: "R:1970325000123456 · 2024-11-25 16:00",
+        text: "- msg1\n- msg2",
+        plainText: "",
+        messages: [
+          { conversationId: "R:1970325000123456", sendTime: 1732550400 },
+          { conversationId: "R:1970325000123456", sendTime: 1732550460 },
+        ],
+      },
+      sessionsFallbackRunner,
+    );
+    expect(sessionEnriched?.subtitle).toBe("核心群 · 2024-11-25 16:00");
+    expect(sessionEnriched?.text).toContain("会话: 核心群");
   });
 });
