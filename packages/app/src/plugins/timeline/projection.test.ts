@@ -241,8 +241,16 @@ describe("plugin timeline projection", () => {
         groupKey: "activity",
         isTail: false,
         entries: [
-          { sourceId: "tool-1", kind: "omp-tool-call", data: { name: "read_file", status: "completed" } },
-          { sourceId: "tool-2", kind: "omp-tool-call", data: { name: "run_command", status: "completed" } },
+          {
+            sourceId: "tool-1",
+            kind: "omp-tool-call",
+            data: { name: "read_file", status: "completed" },
+          },
+          {
+            sourceId: "tool-2",
+            kind: "omp-tool-call",
+            data: { name: "run_command", status: "completed" },
+          },
         ],
       },
     });
@@ -306,6 +314,69 @@ describe("plugin timeline projection", () => {
           { sourceId: "tool-2", data: { name: "run_command", status: "running" } },
         ],
       },
+    });
+  });
+
+  it("records endedAt when a group is sealed by a same-turn item, and omits it across user turns", () => {
+    const t1 = new Date("2026-01-01T00:00:01.000Z");
+    const t2 = new Date("2026-01-01T00:00:15.000Z");
+    const t3 = new Date("2026-01-01T00:00:20.000Z");
+    const tNextHour = new Date("2026-01-01T01:00:00.000Z");
+
+    const makeTool = (id: string, timestamp: Date, turnId?: string): StreamItem => ({
+      kind: "plugin",
+      id: `lumen/${id}/0`,
+      sourceId: id,
+      sourceKind: "tool_call",
+      timestamp,
+      ...(turnId ? { turnId } : {}),
+      pluginId: "lumen",
+      pluginItemId: `${id}/0`,
+      itemKind: "lumen-tool-call",
+      version: 1,
+      data: {
+        name: "read_file",
+        status: "completed",
+        __paseoGroup: { kind: "lumen-step-trail", version: 1, key: "step-trail" },
+      },
+    });
+
+    const assistantReply: StreamItem = {
+      kind: "assistant_message",
+      id: "a1",
+      text: "Done.",
+      timestamp: t2,
+      turnId: "turn-1",
+    };
+    const nextUserMsg: StreamItem = {
+      kind: "user_message",
+      id: "u2",
+      text: "Next question an hour later",
+      timestamp: tNextHour,
+      turnId: "turn-2",
+    };
+
+    const grouped = groupAdjacentPluginItems([
+      makeTool("tool-1", t1, "turn-1"),
+      assistantReply,
+      makeTool("tool-2", t3, "turn-1"),
+      nextUserMsg,
+    ]);
+
+    expect(grouped.items[0]).toMatchObject({
+      id: "lumen/group:tool-1",
+      data: { isTail: false, endedAt: t2.getTime() },
+    });
+    expect((grouped.items[2] as Extract<StreamItem, { kind: "plugin" }>).data).not.toHaveProperty(
+      "endedAt",
+    );
+
+    // Sealing a trailing tail group when a same-turn assistant reply arrives in head
+    const openTail = groupAdjacentPluginItems([makeTool("tool-3", t1, "turn-1")]).items;
+    const sealed = mergeGroupedPluginTailAndHead({ tail: openTail, head: [assistantReply] });
+    expect(sealed.tail[0]).toMatchObject({
+      id: "lumen/group:tool-3",
+      data: { isTail: false, endedAt: t2.getTime() },
     });
   });
 });

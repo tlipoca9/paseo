@@ -122,9 +122,17 @@ export function useScrollToMessage({
           mounted.getBoundingClientRect().top -
           container.getBoundingClientRect().top -
           PROMPT_JUMP_TOP_INSET_PX;
+        const beforeScrollTop = container.scrollTop;
         container.scrollTop += delta;
         settleController.start(messageId);
-        onNearBottomChange(false);
+        const maxScrollTop = Math.max(0, container.scrollHeight - container.clientHeight);
+        const clampedAtBottom =
+          delta > 0 &&
+          container.scrollTop === beforeScrollTop &&
+          container.scrollTop >= maxScrollTop - 2;
+        if (!clampedAtBottom) {
+          onNearBottomChange(false);
+        }
         return;
       }
 

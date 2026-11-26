@@ -145,4 +145,33 @@ describe("agent timeline content", () => {
     });
     expect(limitAgentTimelineItemContent(item)).toBe(item);
   });
+
+  test("compacts oversized full-file edit payloads into a unifiedDiff instead of truncating old/new strings", () => {
+    const baseLines = Array.from(
+      { length: 1800 },
+      (_, i) => `const line${String(i + 1).padStart(4, "0")} = "${"x".repeat(28)}";`,
+    );
+    const updatedLines = [...baseLines];
+    updatedLines.splice(1450, 0, "const insertedNearEnd = true;");
+    const item = limitAgentTimelineItemContent({
+      type: "tool_call",
+      callId: "large-edit",
+      name: "edit_file",
+      status: "completed",
+      error: null,
+      detail: {
+        type: "edit",
+        filePath: "/repo/large.ts",
+        oldString: baseLines.join("\n") + "\n",
+        newString: updatedLines.join("\n") + "\n",
+      },
+    });
+    if (item.type !== "tool_call" || item.detail.type !== "edit") throw new Error("shape");
+    expect(item.detail.oldString).toBeUndefined();
+    expect(item.detail.newString).toBeUndefined();
+    expect(item.detail.unifiedDiff).toContain("@@ -1448,6 +1448,7 @@");
+    expect(item.detail.unifiedDiff).toContain("+const insertedNearEnd = true;");
+    expect(item.detail.unifiedDiff).not.toContain("truncated");
+    expect(serializedBytes(item)).toBeLessThanOrEqual(64 * 1024);
+  });
 });

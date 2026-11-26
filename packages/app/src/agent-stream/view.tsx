@@ -629,6 +629,8 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
       onJumpError: handleTimelineHistoryLoadError,
       mountedHistoryMessageIds,
       revealLoadedMessage: revealLoadedHistory,
+      nearBottom,
+      isTimelineDetached,
     });
 
     useImperativeHandle(

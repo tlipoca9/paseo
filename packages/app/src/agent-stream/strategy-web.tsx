@@ -41,6 +41,7 @@ import {
 } from "./history-start-settle-scheduler";
 import { useChatFindSelectedMessageId } from "@/agent-stream/chat-find";
 import { CHAT_COLUMN_BASE_GUTTER, resolveChatColumnGutters } from "@/chat-rail/gutters";
+import { PROMPT_JUMP_TOP_INSET_PX } from "./prompt-jump-settle";
 import { useScrollToMessage } from "./use-scroll-to-message.web";
 
 interface CreateWebStreamStrategyInput {
@@ -59,6 +60,10 @@ const HISTORY_START_SLOT_HEIGHT_PX = 32;
 const CONTENT_PADDING_TOP_PX = 16;
 const UPWARD_INPUT_EVIDENCE_TIMEOUT_MS = 100;
 const VIRTUALIZER_SCROLL_MARGIN_PX = HISTORY_START_SLOT_HEIGHT_PX + CONTENT_PADDING_TOP_PX;
+// Prompt jumps land the target at PROMPT_JUMP_TOP_INSET_PX (8px ± 1px). Probing 12px deeper
+// clears that seam (and subpixel rounding on the previous row's bottom edge) so the outline
+// resolves to the landed prompt rather than the preceding turn.
+const OUTLINE_READING_OFFSET_PX = PROMPT_JUMP_TOP_INSET_PX + 12;
 
 const ThemedLoadingSpinner = withUnistyles(LoadingSpinner);
 const foregroundMutedColorMapping = (theme: Theme) => ({
@@ -733,7 +738,9 @@ function WebStreamViewport(props: StreamRenderInput & { isMobileBreakpoint: bool
       onReadingPositionChange(null);
       return;
     }
-    onReadingPositionChange(readingAnchor.getReadingRowId(scrollContainer.scrollTop));
+    onReadingPositionChange(
+      readingAnchor.getReadingRowId(scrollContainer.scrollTop, OUTLINE_READING_OFFSET_PX),
+    );
   });
 
   const updateScrollMetrics = useCallback(() => {
@@ -1070,6 +1077,7 @@ function WebStreamViewport(props: StreamRenderInput & { isMobileBreakpoint: bool
   }, [
     reconcileReadingPosition,
     evaluateHistoryStart,
+    flushVirtualizedRowResize,
     isActive,
     reportReadingPosition,
     scheduleHistoryStartPrependSettle,
@@ -1194,9 +1202,8 @@ function WebStreamViewport(props: StreamRenderInput & { isMobileBreakpoint: bool
       lastTouchClientYRef.current = null;
     };
     const handlePluginHoldRow = (event: Event) => {
-      const detail = (
-        event as CustomEvent<{ rowId?: string; triggerEdge?: "top" | "bottom" }>
-      ).detail;
+      const detail = (event as CustomEvent<{ rowId?: string; triggerEdge?: "top" | "bottom" }>)
+        .detail;
       if (!detail?.rowId || !viewportRef.current) {
         return;
       }
@@ -1243,6 +1250,8 @@ function WebStreamViewport(props: StreamRenderInput & { isMobileBreakpoint: bool
     isActive,
     markUpwardInputEvidence,
     rearmHistoryStartFromUserIntent,
+    stopFollowingOutputFromUserIntent,
+    viewportRef,
   ]);
 
   useEffect(() => {

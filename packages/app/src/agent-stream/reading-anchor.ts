@@ -34,8 +34,8 @@ export function createReadingAnchor() {
   } | null = null;
   const anchorTop = (row: RowGeometry) => ({ id: row.id, edge: "top" as const, position: row.top });
   let geometry: readonly RowGeometry[] = [];
-  const readingRow = (scrollTop: number) =>
-    geometry.find((row) => row.top + row.height > scrollTop + READING_POSITION_OFFSET_PX);
+  const readingRow = (scrollTop: number, offsetPx = READING_POSITION_OFFSET_PX) =>
+    geometry.find((row) => row.top + row.height > scrollTop + offsetPx);
   const getRowId = (replacements = NO_REPLACEMENTS) =>
     anchor ? (replacements.get(anchor.id) ?? anchor.id) : null;
   const project = (
@@ -48,8 +48,8 @@ export function createReadingAnchor() {
       : scrollTop;
   return {
     getRowId,
-    getReadingRowId: (scrollTop: number) =>
-      readingRow(scrollTop)?.id ?? geometry.at(-1)?.id ?? null,
+    getReadingRowId: (scrollTop: number, offsetPx = READING_POSITION_OFFSET_PX) =>
+      readingRow(scrollTop, offsetPx)?.id ?? geometry.at(-1)?.id ?? null,
     project,
     reset() {
       anchor = null;

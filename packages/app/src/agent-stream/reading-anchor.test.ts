@@ -186,4 +186,16 @@ describe("reading anchor", () => {
     ).toBe(15000);
     expect(anchor.getRowId()).toBe("r120");
   });
+
+  it("lets outline reading queries probe past the prompt-jump landing seam", () => {
+    const anchor = createReadingAnchor();
+    // Previous turn's trailing row ends at scrollTop + 8.5 (within ±1px of the 8px landing inset).
+    anchor.reconcile(1000, [
+      { id: "prev-reply", top: 700, height: 308.5 },
+      { id: "jumped-prompt", top: 1008.5, height: 48 },
+    ]);
+
+    expect(anchor.getReadingRowId(1000)).toBe("prev-reply");
+    expect(anchor.getReadingRowId(1000, 20)).toBe("jumped-prompt");
+  });
 });

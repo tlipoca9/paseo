@@ -58,18 +58,20 @@ function isSameGroup(
   bPluginId: string,
   b: PluginGroupDescriptor,
 ): boolean {
-  return (
-    aPluginId === bPluginId &&
-    a.kind === b.kind &&
-    a.version === b.version &&
-    a.key === b.key
-  );
+  return aPluginId === bPluginId && a.kind === b.kind && a.version === b.version && a.key === b.key;
+}
+
+function isSameTurnContinuation(groupTurnId: string | undefined, nextItem: StreamItem): boolean {
+  if (nextItem.kind === "user_message") return false;
+  if (groupTurnId && nextItem.turnId && groupTurnId !== nextItem.turnId) return false;
+  return true;
 }
 
 function buildGroupedPluginItem(
   members: readonly PluginTimelineStreamItem[],
   descriptor: PluginGroupDescriptor,
   isTail: boolean,
+  endedAt?: number,
 ): PluginTimelineStreamItem {
   const first = members[0]!;
   const last = members[members.length - 1]!;
@@ -82,6 +84,14 @@ function buildGroupedPluginItem(
     data: stripGroupDescriptor(member.data),
   }));
   const groupId = `${first.pluginId}/group:${firstAnchor}`;
+  const groupData: Record<string, PluginTimelineData> = {
+    groupKey: descriptor.key,
+    isTail,
+    entries: entries as unknown as PluginTimelineData,
+  };
+  if (!isTail && typeof endedAt === "number" && Number.isFinite(endedAt)) {
+    groupData.endedAt = Math.max(last.timestamp.getTime(), endedAt);
+  }
   const grouped: PluginTimelineStreamItem = {
     kind: "plugin",
     id: groupId,
@@ -92,11 +102,7 @@ function buildGroupedPluginItem(
     pluginItemId: `group:${firstAnchor}`,
     itemKind: descriptor.kind,
     version: descriptor.version,
-    data: {
-      groupKey: descriptor.key,
-      isTail,
-      entries: entries as unknown as PluginTimelineData,
-    },
+    data: groupData,
   };
   if (first.timelineCursor) grouped.timelineCursor = first.timelineCursor;
   if (first.turnId) grouped.turnId = first.turnId;
@@ -133,10 +139,14 @@ export function groupAdjacentPluginItems(
   let run: PluginTimelineStreamItem[] = [];
   let runDescriptor: PluginGroupDescriptor | null = null;
 
-  const flush = (isAtEnd: boolean) => {
+  const flush = (isAtEnd: boolean, sealingItem?: StreamItem) => {
     if (run.length === 0 || !runDescriptor) return;
     const isTail = isAtEnd && (options?.trailingIsLiveTail ?? true);
-    const grouped = buildGroupedPluginItem(run, runDescriptor, isTail);
+    const endedAt =
+      !isTail && sealingItem && isSameTurnContinuation(run[0]!.turnId, sealingItem)
+        ? sealingItem.timestamp.getTime()
+        : undefined;
+    const grouped = buildGroupedPluginItem(run, runDescriptor, isTail, endedAt);
     out.push(grouped);
     for (const member of run) {
       hostIdByMemberId.set(member.id, grouped.id);
@@ -151,14 +161,18 @@ export function groupAdjacentPluginItems(
   for (const item of items) {
     const desc = readPluginGroupDescriptor(item);
     if (!desc || item.kind !== "plugin") {
-      flush(false);
+      flush(false, item);
       out.push(item);
       continue;
     }
-    if (run.length > 0 && runDescriptor && isSameGroup(run[0]!.pluginId, runDescriptor, item.pluginId, desc)) {
+    if (
+      run.length > 0 &&
+      runDescriptor &&
+      isSameGroup(run[0]!.pluginId, runDescriptor, item.pluginId, desc)
+    ) {
       run.push(item);
     } else {
-      flush(false);
+      flush(false, item);
       run = [item];
       runDescriptor = desc;
     }
@@ -168,14 +182,118 @@ export function groupAdjacentPluginItems(
   return { items: out, hostIdByMemberId };
 }
 
+function isPluginGroupItem(item: StreamItem | undefined): item is PluginTimelineStreamItem {
+  return item?.kind === "plugin" && item.pluginItemId.startsWith("group:");
+}
+
+function isMergeablePluginGroupPair(
+  tailLast: StreamItem | undefined,
+  headFirst: StreamItem | undefined,
+): tailLast is PluginTimelineStreamItem {
+  return (
+    isPluginGroupItem(tailLast) &&
+    isPluginGroupItem(headFirst) &&
+    tailLast.pluginId === headFirst.pluginId &&
+    tailLast.itemKind === headFirst.itemKind &&
+    tailLast.version === headFirst.version
+  );
+}
+
+function tryMergeAdjacentPluginGroups(
+  tail: StreamItem[],
+  groupedHead: { items: StreamItem[]; hostIdByMemberId: ReadonlyMap<string, string> },
+): {
+  tail: StreamItem[];
+  head: StreamItem[];
+  hostIdByMemberId: ReadonlyMap<string, string>;
+} | null {
+  const tailLast = tail.at(-1);
+  const headFirst = groupedHead.items[0];
+  if (!isMergeablePluginGroupPair(tailLast, headFirst) || !isPluginGroupItem(headFirst)) {
+    return null;
+  }
+
+  const tailData = tailLast.data as Record<string, unknown>;
+  const headData = headFirst.data as Record<string, unknown>;
+  if (
+    typeof tailData.groupKey !== "string" ||
+    tailData.groupKey !== headData.groupKey ||
+    !Array.isArray(tailData.entries) ||
+    !Array.isArray(headData.entries)
+  ) {
+    return null;
+  }
+
+  const mergedEntries = [...tailData.entries, ...headData.entries];
+  const mergedIsTail = groupedHead.items.length === 1;
+  const mergedData: Record<string, PluginTimelineData> = {
+    groupKey: tailData.groupKey,
+    isTail: mergedIsTail,
+    entries: mergedEntries as PluginTimelineData,
+  };
+  if (!mergedIsTail && typeof headData.endedAt === "number" && Number.isFinite(headData.endedAt)) {
+    mergedData.endedAt = Math.max(headFirst.timestamp.getTime(), headData.endedAt);
+  }
+  const mergedItem: PluginTimelineStreamItem = {
+    ...tailLast,
+    timestamp: headFirst.timestamp,
+    data: mergedData,
+  };
+  const hostMap = new Map(groupedHead.hostIdByMemberId);
+  for (const [k, v] of hostMap) {
+    if (v === headFirst.id) hostMap.set(k, mergedItem.id);
+  }
+  hostMap.set(headFirst.id, mergedItem.id);
+  return {
+    tail: [...tail.slice(0, -1), mergedItem],
+    head: groupedHead.items.slice(1),
+    hostIdByMemberId: hostMap,
+  };
+}
+
+function sealTrailingTailGroup(
+  tail: StreamItem[],
+  groupedHead: { items: StreamItem[]; hostIdByMemberId: ReadonlyMap<string, string> },
+): {
+  tail: StreamItem[];
+  head: StreamItem[];
+  hostIdByMemberId: ReadonlyMap<string, string>;
+} | null {
+  const tailLast = tail.at(-1);
+  if (
+    !isPluginGroupItem(tailLast) ||
+    !tailLast.data ||
+    typeof tailLast.data !== "object" ||
+    Array.isArray(tailLast.data) ||
+    (tailLast.data as Record<string, unknown>).isTail !== true
+  ) {
+    return null;
+  }
+
+  const headFirst = groupedHead.items[0];
+  const nextData: Record<string, PluginTimelineData> = {
+    ...(tailLast.data as Record<string, PluginTimelineData>),
+    isTail: false,
+  };
+  if (headFirst && isSameTurnContinuation(tailLast.turnId, headFirst)) {
+    nextData.endedAt = Math.max(tailLast.timestamp.getTime(), headFirst.timestamp.getTime());
+  }
+  const updatedTailLast: PluginTimelineStreamItem = {
+    ...tailLast,
+    data: nextData,
+  };
+  return {
+    tail: [...tail.slice(0, -1), updatedTailLast],
+    head: groupedHead.items,
+    hostIdByMemberId: groupedHead.hostIdByMemberId,
+  };
+}
+
 /**
  * Merges leading groupable items in `head` into a matching trailing grouped item
  * in `tail`, and groups any remaining groupable items inside `head`.
  */
-export function mergeGroupedPluginTailAndHead(input: {
-  tail: StreamItem[];
-  head: StreamItem[];
-}): {
+export function mergeGroupedPluginTailAndHead(input: { tail: StreamItem[]; head: StreamItem[] }): {
   tail: StreamItem[];
   head: StreamItem[];
   hostIdByMemberId: ReadonlyMap<string, string>;
@@ -186,70 +304,17 @@ export function mergeGroupedPluginTailAndHead(input: {
   }
 
   const groupedHead = groupAdjacentPluginItems(head, { trailingIsLiveTail: true });
-  const tailLast = tail.at(-1);
-  const headFirst = groupedHead.items[0];
-
-  if (
-    tailLast?.kind === "plugin" &&
-    headFirst?.kind === "plugin" &&
-    tailLast.pluginId === headFirst.pluginId &&
-    tailLast.itemKind === headFirst.itemKind &&
-    tailLast.version === headFirst.version &&
-    tailLast.pluginItemId.startsWith("group:") &&
-    headFirst.pluginItemId.startsWith("group:")
-  ) {
-    const tailData = tailLast.data as Record<string, unknown>;
-    const headData = headFirst.data as Record<string, unknown>;
-    if (
-      typeof tailData.groupKey === "string" &&
-      tailData.groupKey === headData.groupKey &&
-      Array.isArray(tailData.entries) &&
-      Array.isArray(headData.entries)
-    ) {
-      const mergedEntries = [...tailData.entries, ...headData.entries];
-      const mergedIsTail = groupedHead.items.length === 1;
-      const mergedItem: PluginTimelineStreamItem = {
-        ...tailLast,
-        timestamp: headFirst.timestamp,
-        data: {
-          groupKey: tailData.groupKey,
-          isTail: mergedIsTail,
-          entries: mergedEntries as PluginTimelineData,
-        },
-      };
-      const nextTail = [...tail.slice(0, -1), mergedItem];
-      const nextHead = groupedHead.items.slice(1);
-      const hostMap = new Map(groupedHead.hostIdByMemberId);
-      for (const [k, v] of hostMap) {
-        if (v === headFirst.id) hostMap.set(k, mergedItem.id);
-      }
-      hostMap.set(headFirst.id, mergedItem.id);
-      return { tail: nextTail, head: nextHead, hostIdByMemberId: hostMap };
-    }
+  const merged = tryMergeAdjacentPluginGroups(tail, groupedHead);
+  if (merged) {
+    return merged;
   }
 
   // If tail ended with a group but head starts with a non-matching item (e.g.
-  // streaming assistant reply), mark the trailing tail group as no longer tail.
-  if (
-    tailLast?.kind === "plugin" &&
-    tailLast.pluginItemId.startsWith("group:") &&
-    tailLast.data &&
-    typeof tailLast.data === "object" &&
-    !Array.isArray(tailLast.data) &&
-    (tailLast.data as Record<string, unknown>).isTail === true
-  ) {
-    const updatedTailLast: PluginTimelineStreamItem = {
-      ...tailLast,
-      data: {
-        ...(tailLast.data as Record<string, PluginTimelineData>),
-        isTail: false,
-      },
-    };
-    return {
-      tail: [...tail.slice(0, -1), updatedTailLast],
-      head: groupedHead.items,
-      hostIdByMemberId: groupedHead.hostIdByMemberId,
-    };
+  // streaming assistant reply), mark the trailing tail group as no longer tail
+  // and seal its wall-clock end timestamp when head continues the same turn.
+  const sealed = sealTrailingTailGroup(tail, groupedHead);
+  if (sealed) {
+    return sealed;
   }
 
   return { tail, head: groupedHead.items, hostIdByMemberId: groupedHead.hostIdByMemberId };

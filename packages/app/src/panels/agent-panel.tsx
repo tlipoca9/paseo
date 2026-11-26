@@ -1208,12 +1208,6 @@ const ChatAgentReadyContent = memo(function ChatAgentReadyContent({
     onAttentionInputFocus();
     return false;
   }, [onAttentionInputFocus]);
-  const handleJumpToTimelineMessage = useCallback(
-    (messageId: string) => {
-      streamViewRef.current?.scrollToMessage(messageId);
-    },
-    [streamViewRef],
-  );
   const streamContent = (
     <View
       style={animatedStaticStyles.content}
@@ -1246,7 +1240,6 @@ const ChatAgentReadyContent = memo(function ChatAgentReadyContent({
           workspaceId={workspaceId}
           agentId={agentId}
           parentAgentId={parentPillAgentId}
-          onJumpToMessage={handleJumpToTimelineMessage}
         />
       ) : null}
     </View>

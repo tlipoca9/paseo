@@ -5,6 +5,7 @@ import { useStableEvent } from "@/hooks/use-stable-event";
 import { getHostRuntimeStore } from "@/runtime/host-runtime";
 import { planTimelinePromptJump } from "@/timeline/timeline-sync-plan";
 import type { StreamItem } from "@/types/stream";
+import type { NearBottom } from "../near-bottom";
 import type { StreamViewportHandle } from "../strategy";
 import {
   createActivePromptPublisher,
@@ -24,6 +25,11 @@ interface PendingPromptJump {
   hasScrolled: boolean;
 }
 
+interface PinnedPromptJump {
+  seq: number;
+  bottomClamped: boolean;
+}
+
 export interface UseChatOutlineInput {
   agentId: string;
   serverId: string;
@@ -36,6 +42,10 @@ export interface UseChatOutlineInput {
   // Message ids of the history the viewport has mounted. Live head messages are always mounted.
   mountedHistoryMessageIds?: ReadonlySet<string>;
   revealLoadedMessage?: (messageId: string) => boolean;
+  // External bottom-proximity state so reading at the live end highlights the latest turn
+  // even when that turn is shorter than the viewport.
+  nearBottom?: NearBottom;
+  isTimelineDetached?: boolean;
 }
 
 export interface ChatOutline {
@@ -74,11 +84,17 @@ export function useChatOutline({
   onJumpError,
   mountedHistoryMessageIds,
   revealLoadedMessage,
+  nearBottom,
+  isTimelineDetached = false,
 }: UseChatOutlineInput): ChatOutline {
   const [index, setIndex] = useState<AgentTimelinePromptIndexPayload | null>(null);
   const [pendingJump, setPendingJump] = useState<PendingPromptJump | null>(null);
   const [activePrompt] = useState(createActivePromptPublisher);
   const readingSeqRef = useRef<number | null>(null);
+  const pendingJumpRef = useRef<PendingPromptJump | null>(null);
+  pendingJumpRef.current = pendingJump;
+  const pinnedJumpRef = useRef<PinnedPromptJump | null>(null);
+  const previousLatestPromptSeqRef = useRef<number>(-1);
   const nextJumpRequestIdRef = useRef(0);
   const nextIndexRequestIdRef = useRef(0);
   // A disabled outline (every native viewport) must not pay for the timeline per delta.
@@ -132,26 +148,84 @@ export function useChatOutline({
   // The transcript resolves display rows (including Markdown blocks and plugin cards) to
   // timeline positions. The outline uses the complete index, including unloaded prompts.
   const publishActivePrompt = useStableEvent(() => {
+    const isAtLiveBottom = !isTimelineDetached && nearBottom?.get() === true;
+    const pinned = pinnedJumpRef.current;
+    if (pinned !== null) {
+      if (prompts.some((prompt) => prompt.seq === pinned.seq)) {
+        activePrompt.publish(pinned.seq);
+        return;
+      }
+      if (prompts.length > 0) {
+        pinnedJumpRef.current = null;
+      }
+    }
+    if (isAtLiveBottom && prompts.length > 0) {
+      activePrompt.publish(prompts.at(-1)!.seq);
+      return;
+    }
     activePrompt.publish(resolveActivePromptSeq(prompts, readingSeqRef.current));
   });
 
   const reportReadingPosition = useStableEvent((seq: number | null) => {
     readingSeqRef.current = seq;
+    const pinned = pinnedJumpRef.current;
+    if (pinned !== null) {
+      const resolved = resolveActivePromptSeq(prompts, seq);
+      const isAtLiveBottom = !isTimelineDetached && nearBottom?.get() === true;
+      if (resolved === pinned.seq) {
+        pinnedJumpRef.current = null;
+      } else if (isAtLiveBottom) {
+        // Jumping to a prompt near the bottom clamps scrollTop at maxScrollTop, leaving
+        // the viewport top inside an earlier turn. Keep the clicked prompt highlighted
+        // until the reader scrolls back off the bottom.
+        pinned.bottomClamped = true;
+      } else if (pendingJumpRef.current === null) {
+        pinnedJumpRef.current = null;
+      }
+    }
     publishActivePrompt();
   });
+
+  useEffect(() => {
+    if (!nearBottom) return;
+    return nearBottom.subscribe(() => {
+      const isAtLiveBottom = !isTimelineDetached && nearBottom.get();
+      const pinned = pinnedJumpRef.current;
+      if (pinned !== null) {
+        if (isAtLiveBottom) {
+          pinned.bottomClamped = true;
+        } else if (pinned.bottomClamped) {
+          pinnedJumpRef.current = null;
+        }
+      }
+      publishActivePrompt();
+    });
+  }, [isTimelineDetached, nearBottom, publishActivePrompt]);
 
   useEffect(() => {
     nextJumpRequestIdRef.current += 1;
     setPendingJump(null);
     readingSeqRef.current = null;
+    pinnedJumpRef.current = null;
+    previousLatestPromptSeqRef.current = -1;
     activePrompt.publish(null);
   }, [activePrompt, agentId, timelineEpoch]);
+
+  // Clear any bottom-clamped jump pin when a brand-new user prompt arrives so the rail
+  // advances to the new turn at the bottom of the transcript.
+  useEffect(() => {
+    const previous = previousLatestPromptSeqRef.current;
+    previousLatestPromptSeqRef.current = latestPromptSeq;
+    if (previous >= 0 && latestPromptSeq > previous) {
+      pinnedJumpRef.current = null;
+    }
+  }, [latestPromptSeq]);
 
   // The transcript reports its reading position long before the index arrives, and a reader
   // who never scrolls would otherwise sit on an unmarked rail.
   useEffect(() => {
     publishActivePrompt();
-  }, [prompts, publishActivePrompt]);
+  }, [isTimelineDetached, prompts, publishActivePrompt]);
 
   useEffect(() => {
     if (pendingJump === null) return;
@@ -190,6 +264,8 @@ export function useChatOutline({
   const jumpToPrompt = useStableEvent((seq: number) => {
     nextJumpRequestIdRef.current += 1;
     setPendingJump(null);
+    pinnedJumpRef.current = { seq, bottomClamped: false };
+    publishActivePrompt();
     const loaded = findLoadedItem(
       loadedTail,
       loadedHead,
@@ -204,13 +280,19 @@ export function useChatOutline({
       viewportRef.current?.scrollToMessage?.(loaded.id);
       return;
     }
-    if (!index) return;
+    if (!index) {
+      pinnedJumpRef.current = null;
+      publishActivePrompt();
+      return;
+    }
     const requestId = nextJumpRequestIdRef.current;
     setPendingJump({ requestId, seq, fetchSettled: false, hasScrolled: false });
     void getHostRuntimeStore()
       .fetchAgentTimeline(serverId, agentId, planTimelinePromptJump({ epoch: index.epoch, seq }))
       .catch((error: unknown) => {
         console.warn("Failed to load a Chat outline window", error);
+        pinnedJumpRef.current = null;
+        publishActivePrompt();
         onJumpError();
       })
       .finally(() => {

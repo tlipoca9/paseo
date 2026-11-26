@@ -404,4 +404,134 @@ describe("useChatOutline", () => {
     await act(async () => result.current.jumpToPrompt(2));
     expect(scrollToMessage).toHaveBeenCalledWith("live-prompt");
   });
+
+  it("highlights the latest prompt while at the live bottom even when viewport top is in an earlier turn", async () => {
+    runtime.listAgentTimelinePrompts.mockResolvedValue({
+      epoch: "epoch-1",
+      prompts: [
+        { seq: 1, timestamp: new Date(1).toISOString(), preview: "Turn 1" },
+        { seq: 5, timestamp: new Date(5).toISOString(), preview: "Turn 2" },
+        { seq: 10, timestamp: new Date(10).toISOString(), preview: "Turn 3" },
+      ],
+    });
+    let atBottom = true;
+    const listeners = new Set<() => void>();
+    const nearBottom = {
+      get: () => atBottom,
+      set: (next: boolean) => {
+        if (next === atBottom) return;
+        atBottom = next;
+        for (const listener of listeners) listener();
+      },
+      subscribe: (listener: () => void) => {
+        listeners.add(listener);
+        return () => {
+          listeners.delete(listener);
+        };
+      },
+    };
+    const viewportRef = createRef<StreamViewportHandle>();
+    const { result } = renderHook(() =>
+      useChatOutline({
+        agentId: "agent-1",
+        serverId: "server-1",
+        timelineEpoch: "epoch-1",
+        tail: [],
+        head: [],
+        enabled: true,
+        viewportRef,
+        onJumpError: vi.fn(),
+        nearBottom,
+        isTimelineDetached: false,
+      }),
+    );
+
+    await waitFor(() => expect(result.current.prompts).toHaveLength(3));
+    // Viewport top sits inside Turn 2 (seq 7), while the user is reading at the bottom.
+    act(() => result.current.reportReadingPosition(7));
+    expect(result.current.activePrompt.getActiveSeq()).toBe(10);
+
+    // Scrolling up off the bottom immediately switches to Turn 2.
+    act(() => {
+      nearBottom.set(false);
+      result.current.reportReadingPosition(7);
+    });
+    expect(result.current.activePrompt.getActiveSeq()).toBe(5);
+
+    // Returning to the bottom highlights Turn 3 again.
+    act(() => nearBottom.set(true));
+    expect(result.current.activePrompt.getActiveSeq()).toBe(10);
+  });
+
+  it("keeps a bottom-clamped jumped prompt highlighted until the reader scrolls off the bottom", async () => {
+    runtime.listAgentTimelinePrompts.mockResolvedValue({
+      epoch: "epoch-1",
+      prompts: [
+        { seq: 1, timestamp: new Date(1).toISOString(), preview: "Turn 1" },
+        { seq: 5, timestamp: new Date(5).toISOString(), preview: "Turn 2" },
+        { seq: 10, timestamp: new Date(10).toISOString(), preview: "Turn 3" },
+      ],
+    });
+    let atBottom = true;
+    const listeners = new Set<() => void>();
+    const nearBottom = {
+      get: () => atBottom,
+      set: (next: boolean) => {
+        if (next === atBottom) return;
+        atBottom = next;
+        for (const listener of listeners) listener();
+      },
+      subscribe: (listener: () => void) => {
+        listeners.add(listener);
+        return () => {
+          listeners.delete(listener);
+        };
+      },
+    };
+    const scrollToMessage = vi.fn();
+    const viewportRef = {
+      current: {
+        scrollToBottom: vi.fn(),
+        prepareForViewportChange: vi.fn(),
+        holdRow: vi.fn(),
+        scrollToMessage,
+      },
+    };
+    const turn2 = {
+      id: "prompt-5",
+      kind: "user_message" as const,
+      text: "Turn 2",
+      timestamp: new Date(5),
+      timelineCursor: { epoch: "epoch-1", seq: 5 },
+    };
+    const { result } = renderHook(() =>
+      useChatOutline({
+        agentId: "agent-1",
+        serverId: "server-1",
+        timelineEpoch: "epoch-1",
+        tail: [turn2],
+        head: [],
+        enabled: true,
+        viewportRef,
+        onJumpError: vi.fn(),
+        nearBottom,
+        isTimelineDetached: false,
+      }),
+    );
+
+    await waitFor(() => expect(result.current.prompts).toHaveLength(3));
+    act(() => {
+      result.current.jumpToPrompt(5);
+      // Scroll clamps at maxScrollTop so viewport top stays inside Turn 1 (seq 3).
+      result.current.reportReadingPosition(3);
+    });
+    expect(result.current.activePrompt.getActiveSeq()).toBe(5);
+
+    // Once the reader scrolls up off the bottom, tracking resumes from the reading line.
+    act(() => {
+      nearBottom.set(false);
+      result.current.reportReadingPosition(2);
+    });
+    expect(result.current.activePrompt.getActiveSeq()).toBe(1);
+  });
 });

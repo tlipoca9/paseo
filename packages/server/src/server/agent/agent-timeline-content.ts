@@ -14,6 +14,201 @@ const MARKER_COST = 32;
 // Ids, names, paths and queries stay whole, so an item keeps its identity across passes.
 const SHORT_STRING = 1024;
 const MAX_DEPTH = 64;
+const EDIT_DIFF_CONTEXT_LINES = 3;
+const EDIT_DIFF_MAX_LCS_CELLS = 250_000;
+
+function splitDiffLines(text: string): string[] {
+  if (!text) return [];
+  const lines = text.replace(/\r\n/g, "\n").split("\n");
+  if (lines.length > 0 && lines[lines.length - 1] === "") lines.pop();
+  return lines;
+}
+
+interface DiffOp {
+  type: "equal" | "remove" | "add";
+  text: string;
+  oldLine?: number;
+  newLine?: number;
+}
+
+function formatDiffOpLine(op: DiffOp): string {
+  if (op.type === "add") return `+${op.text}`;
+  if (op.type === "remove") return `-${op.text}`;
+  return ` ${op.text}`;
+}
+
+function computeLcsDiffOps(middleOld: string[], middleNew: string[], prefix: number): DiffOp[] {
+  const n = middleOld.length;
+  const m = middleNew.length;
+  const cols = m + 1;
+  const dp = new Int32Array((n + 1) * cols);
+
+  for (let i = n - 1; i >= 0; i -= 1) {
+    const row = i * cols;
+    const next = (i + 1) * cols;
+    const line = middleOld[i];
+    for (let j = m - 1; j >= 0; j -= 1) {
+      if (line === middleNew[j]) {
+        dp[row + j] = dp[next + j + 1]! + 1;
+      } else {
+        const down = dp[next + j]!;
+        const right = dp[row + j + 1]!;
+        dp[row + j] = down >= right ? down : right;
+      }
+    }
+  }
+
+  const ops: DiffOp[] = [];
+  let i = 0;
+  let j = 0;
+  while (i < n && j < m) {
+    if (middleOld[i] === middleNew[j]) {
+      ops.push({
+        type: "equal",
+        text: middleOld[i]!,
+        oldLine: prefix + 1 + i,
+        newLine: prefix + 1 + j,
+      });
+      i += 1;
+      j += 1;
+    } else if (dp[(i + 1) * cols + j]! >= dp[i * cols + (j + 1)]!) {
+      ops.push({ type: "remove", text: middleOld[i]!, oldLine: prefix + 1 + i });
+      i += 1;
+    } else {
+      ops.push({ type: "add", text: middleNew[j]!, newLine: prefix + 1 + j });
+      j += 1;
+    }
+  }
+  while (i < n) {
+    ops.push({ type: "remove", text: middleOld[i]!, oldLine: prefix + 1 + i });
+    i += 1;
+  }
+  while (j < m) {
+    ops.push({ type: "add", text: middleNew[j]!, newLine: prefix + 1 + j });
+    j += 1;
+  }
+  return ops;
+}
+
+function computeMiddleDiffOps(middleOld: string[], middleNew: string[], prefix: number): DiffOp[] {
+  const n = middleOld.length;
+  const m = middleNew.length;
+  if (n > 0 && m > 0 && n * m <= EDIT_DIFF_MAX_LCS_CELLS) {
+    return computeLcsDiffOps(middleOld, middleNew, prefix);
+  }
+  const ops: DiffOp[] = [];
+  for (let i = 0; i < n; i += 1) {
+    ops.push({ type: "remove", text: middleOld[i]!, oldLine: prefix + 1 + i });
+  }
+  for (let j = 0; j < m; j += 1) {
+    ops.push({ type: "add", text: middleNew[j]!, newLine: prefix + 1 + j });
+  }
+  return ops;
+}
+
+function formatUnifiedDiffHunks(fullOps: DiffOp[]): string {
+  const changeIndices: number[] = [];
+  for (let idx = 0; idx < fullOps.length; idx += 1) {
+    if (fullOps[idx]!.type !== "equal") changeIndices.push(idx);
+  }
+  if (changeIndices.length === 0) return "";
+
+  const hunks: Array<{ start: number; end: number }> = [];
+  for (const idx of changeIndices) {
+    const start = Math.max(0, idx - EDIT_DIFF_CONTEXT_LINES);
+    const end = Math.min(fullOps.length - 1, idx + EDIT_DIFF_CONTEXT_LINES);
+    const prev = hunks[hunks.length - 1];
+    if (prev && start <= prev.end + 1) prev.end = Math.max(prev.end, end);
+    else hunks.push({ start, end });
+  }
+
+  const out: string[] = [];
+  for (const hunk of hunks) {
+    const slice = fullOps.slice(hunk.start, hunk.end + 1);
+    const firstOld = slice.find((op) => op.oldLine !== undefined)?.oldLine ?? 1;
+    const firstNew = slice.find((op) => op.newLine !== undefined)?.newLine ?? 1;
+    const oldSpan = slice.filter((op) => op.type !== "add").length;
+    const newSpan = slice.filter((op) => op.type !== "remove").length;
+    out.push(`@@ -${firstOld},${oldSpan} +${firstNew},${newSpan} @@`);
+    for (const op of slice) {
+      out.push(formatDiffOpLine(op));
+    }
+  }
+  return out.join("\n");
+}
+
+/**
+ * Compacts an oversized full-file edit (`oldString` + `newString`) into a standard
+ * unified diff before generic string truncation runs. Without this, cutting both
+ * full-file strings at a fixed character cap destroys edits near the end of large files
+ * and introduces phantom diff hunks right at the truncation boundary.
+ */
+function compactOversizedEditToUnifiedDiff(oldText: string, newText: string): string | null {
+  const oldLines = splitDiffLines(oldText);
+  const newLines = splitDiffLines(newText);
+
+  let prefix = 0;
+  while (
+    prefix < oldLines.length &&
+    prefix < newLines.length &&
+    oldLines[prefix] === newLines[prefix]
+  ) {
+    prefix += 1;
+  }
+
+  let oldEnd = oldLines.length;
+  let newEnd = newLines.length;
+  while (oldEnd > prefix && newEnd > prefix && oldLines[oldEnd - 1] === newLines[newEnd - 1]) {
+    oldEnd -= 1;
+    newEnd -= 1;
+  }
+
+  if (prefix === oldEnd && prefix === newEnd) {
+    return "";
+  }
+
+  const middleOps = computeMiddleDiffOps(
+    oldLines.slice(prefix, oldEnd),
+    newLines.slice(prefix, newEnd),
+    prefix,
+  );
+
+  const fullOps: DiffOp[] = [];
+  const leadStart = Math.max(0, prefix - EDIT_DIFF_CONTEXT_LINES);
+  for (let i = leadStart; i < prefix; i += 1) {
+    fullOps.push({ type: "equal", text: oldLines[i]!, oldLine: i + 1, newLine: i + 1 });
+  }
+  for (const op of middleOps) fullOps.push(op);
+  const trailCount = Math.min(oldLines.length - oldEnd, EDIT_DIFF_CONTEXT_LINES);
+  for (let i = 0; i < trailCount; i += 1) {
+    fullOps.push({
+      type: "equal",
+      text: oldLines[oldEnd + i]!,
+      oldLine: oldEnd + i + 1,
+      newLine: newEnd + i + 1,
+    });
+  }
+
+  return formatUnifiedDiffHunks(fullOps);
+}
+
+function maybeCompactOversizedEditItem(item: AgentTimelineItem): AgentTimelineItem {
+  if (item.type !== "tool_call" || item.detail.type !== "edit") return item;
+  const { oldString, newString, unifiedDiff } = item.detail;
+  if (unifiedDiff || typeof oldString !== "string" || typeof newString !== "string") return item;
+  if (!oldString || !newString) return item;
+  const diff = compactOversizedEditToUnifiedDiff(oldString, newString);
+  if (diff === null) return item;
+  // Drop redundant full-file strings now that unifiedDiff captures the exact hunks with line numbers.
+  const { oldString: _old, newString: _new, ...restDetail } = item.detail;
+  return {
+    ...item,
+    detail: {
+      ...restDetail,
+      ...(diff ? { unifiedDiff: diff } : {}),
+    },
+  };
+}
 
 // The app registers renderer kinds under the plugin ID rule, so stored kinds must use that format.
 export function assertPluginTimelineKind(kind: string): void {
@@ -138,11 +333,22 @@ function cut(value: unknown, depth: number, state: CutState): unknown {
 /** Returns the item itself when it fits its budget; otherwise a copy with its largest strings cut. */
 export function limitAgentTimelineItemContent(item: AgentTimelineItem): AgentTimelineItem {
   const budget = item.type === "tool_call" ? TOOL_CALL_BUDGET : ITEM_BUDGET;
-  const size: ItemSize = { nodeCost: 0, stringLengths: [], tooDeep: false };
-  measure(item, 0, size);
-  let stringTotal = 0;
-  for (const length of size.stringLengths) stringTotal += length;
-  if (!size.tooDeep && size.nodeCost + stringTotal <= budget) return item;
+  const initialSize: ItemSize = { nodeCost: 0, stringLengths: [], tooDeep: false };
+  measure(item, 0, initialSize);
+  let initialStringTotal = 0;
+  for (const length of initialSize.stringLengths) initialStringTotal += length;
+  if (!initialSize.tooDeep && initialSize.nodeCost + initialStringTotal <= budget) return item;
+
+  const candidate = maybeCompactOversizedEditItem(item);
+  const size: ItemSize =
+    candidate === item ? initialSize : { nodeCost: 0, stringLengths: [], tooDeep: false };
+  let stringTotal = initialStringTotal;
+  if (candidate !== item) {
+    measure(candidate, 0, size);
+    stringTotal = 0;
+    for (const length of size.stringLengths) stringTotal += length;
+    if (!size.tooDeep && size.nodeCost + stringTotal <= budget) return candidate;
+  }
 
   // Strings get what structure leaves, but at least half the budget, less a margin for JSON
   // escaping. Arrays drop the elements that do not fit, which bounds items whose short strings
@@ -151,5 +357,5 @@ export function limitAgentTimelineItemContent(item: AgentTimelineItem): AgentTim
     MARKER_COST * size.stringLengths.filter((length) => length > SHORT_STRING).length;
   const available = (budget * 15) / 16 - Math.min(size.nodeCost, budget / 2) - markerCost;
   const stringCap = Math.max(SHORT_STRING, findStringCap(size.stringLengths, available));
-  return cut(item, 0, { stringCap, remaining: budget }) as AgentTimelineItem;
+  return cut(candidate, 0, { stringCap, remaining: budget }) as AgentTimelineItem;
 }
