@@ -8867,6 +8867,30 @@ export class Session {
     });
   }
 
+  private supportsForOptionalSource(capability: ClientCapability, source?: object): boolean {
+    return source ? this.supportsForSource(capability, source) : this.supports(capability);
+  }
+
+  private createTimelineCollapsedFilter(
+    source?: object,
+  ): <T extends string>(collapsed: T[]) => T[] {
+    const supportsReasoningMerge = this.supportsForOptionalSource(
+      CLIENT_CAPS.reasoningMergeEnum,
+      source,
+    );
+    const supportsIdentityCollapse = this.supportsForOptionalSource(
+      CLIENT_CAPS.pluginTimelineItems,
+      source,
+    );
+    if (supportsReasoningMerge && supportsIdentityCollapse) return (collapsed) => collapsed;
+    return (collapsed) =>
+      collapsed.filter(
+        (value) =>
+          (supportsReasoningMerge || value !== "reasoning_merge") &&
+          (supportsIdentityCollapse || value !== "identity"),
+      );
+  }
+
   private async handleFetchAgentTimelineRequest(
     msg: Extract<SessionInboundMessage, { type: "fetch_agent_timeline_request" }>,
     source?: object,
@@ -8935,6 +8959,8 @@ export class Session {
         }
       }
 
+      const filterCollapsed = this.createTimelineCollapsedFilter(source);
+
       this.emitForSource(
         {
           type: "fetch_agent_timeline_response",
@@ -8964,13 +8990,7 @@ export class Session {
                 sourceSeqRanges: entry.sourceSeqRanges,
                 turnMetrics: entry.turnMetrics,
                 turnId: undefined as string | undefined,
-                collapsed: (
-                  source
-                    ? this.supportsForSource(CLIENT_CAPS.reasoningMergeEnum, source)
-                    : this.supports(CLIENT_CAPS.reasoningMergeEnum)
-                )
-                  ? entry.collapsed
-                  : entry.collapsed.filter((value) => value !== "reasoning_merge"),
+                collapsed: filterCollapsed(entry.collapsed),
               };
               payloadEntry.turnId = entry.turnId;
               return payloadEntry;

@@ -148,6 +148,15 @@ function mergeIdentityMetadata(
   };
 }
 
+function projectionItemIdentity(item: AgentTimelineItem): string | null {
+  const identity = timelineItemIdentity(item);
+  if (identity !== null) return `${item.type}:${identity}`;
+  if (item.type === "user_message" && item.messageId) {
+    return `user_message:${item.messageId}`;
+  }
+  return null;
+}
+
 function mergeIdentityEntries(existing: WorkingEntry, entry: WorkingEntry): WorkingEntry | null {
   switch (entry.item.type) {
     case "tool_call":
@@ -167,6 +176,23 @@ function mergeIdentityEntries(existing: WorkingEntry, entry: WorkingEntry): Work
         seqStart: existing.seqStart,
         ...mergeIdentityMetadata(existing, entry, "identity"),
       };
+    case "user_message":
+      if (existing.item.type !== "user_message" || existing.turnId !== entry.turnId) return null;
+      return {
+        ...existing,
+        item: {
+          ...existing.item,
+          ...entry.item,
+          ...(existing.item.clientMessageId && !entry.item.clientMessageId
+            ? { clientMessageId: existing.item.clientMessageId }
+            : {}),
+        },
+        timestamp: entry.timestamp,
+        seqEnd: Math.max(existing.seqEnd, entry.seqEnd),
+        ...(entry.providerMessageId ? { providerMessageId: entry.providerMessageId } : {}),
+        ...(entry.turnMetrics ? { turnMetrics: entry.turnMetrics } : {}),
+        ...mergeIdentityMetadata(existing, entry, "identity"),
+      };
     default:
       return null;
   }
@@ -177,7 +203,7 @@ function collapseByIdentity(entries: readonly WorkingEntry[]): WorkingEntry[] {
   const indexByIdentity = new Map<string, number>();
 
   for (const entry of entries) {
-    const identity = timelineItemIdentity(entry.item);
+    const identity = projectionItemIdentity(entry.item);
     if (identity === null) {
       output.push(entry);
       continue;
@@ -349,7 +375,7 @@ export class TimelineProjection {
 
   private appendProjected(row: AgentTimelineRow): number {
     const entry = makeCanonicalEntries([row])[0];
-    const identity = timelineItemIdentity(row.item);
+    const identity = projectionItemIdentity(row.item);
     const index = identity === null ? undefined : this.identities.get(identity);
     const existing = index === undefined ? undefined : this.rows[index];
     const merged = existing ? mergeIdentityEntries(existing, entry) : null;

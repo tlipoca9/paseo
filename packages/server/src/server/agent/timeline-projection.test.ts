@@ -215,6 +215,98 @@ describe("projectTimelineRows", () => {
     expect(projected[0]?.collapsed).toContain("identity");
   });
 
+  test("collapses cumulative user_message snapshots with the same messageId in projected mode", () => {
+    const rows: AgentTimelineRow[] = [
+      {
+        seq: 1,
+        timestamp: "2026-02-13T00:00:00.000Z",
+        item: { type: "user_message", text: "/goal", messageId: "user_message_chunk:168" },
+      },
+      {
+        seq: 2,
+        timestamp: "2026-02-13T00:00:00.100Z",
+        item: {
+          type: "user_message",
+          text: "/goal LOOP\n\n1. Fix the bug",
+          messageId: "user_message_chunk:168",
+        },
+      },
+      {
+        seq: 3,
+        timestamp: "2026-02-13T00:00:00.200Z",
+        item: { type: "user_message", text: "follow-up", messageId: "user_message_chunk:169" },
+      },
+    ];
+
+    const projected = projectTimelineRows({ rows, mode: "projected" });
+
+    expect(projected).toHaveLength(2);
+    expect(projected[0]?.item).toEqual({
+      type: "user_message",
+      text: "/goal LOOP\n\n1. Fix the bug",
+      messageId: "user_message_chunk:168",
+    });
+    expect(projected[0]?.seqStart).toBe(1);
+    expect(projected[0]?.seqEnd).toBe(2);
+    expect(projected[0]?.sourceSeqRanges).toEqual([{ startSeq: 1, endSeq: 2 }]);
+    expect(projected[0]?.collapsed).toContain("identity");
+    expect(projected[1]?.item).toEqual({
+      type: "user_message",
+      text: "follow-up",
+      messageId: "user_message_chunk:169",
+    });
+
+    const page = selectProjectedTimelinePage({ rows, direction: "tail", limit: 10 });
+    expect(page.entries.map((entry) => entry.item)).toEqual([
+      {
+        type: "user_message",
+        text: "/goal LOOP\n\n1. Fix the bug",
+        messageId: "user_message_chunk:168",
+      },
+      {
+        type: "user_message",
+        text: "follow-up",
+        messageId: "user_message_chunk:169",
+      },
+    ]);
+  });
+
+  test("keeps user_message rows separate across turns or without messageId", () => {
+    const rows: AgentTimelineRow[] = [
+      {
+        seq: 1,
+        turnId: "turn-1",
+        timestamp: "2026-02-13T00:00:00.000Z",
+        item: { type: "user_message", text: "first", messageId: "shared-id" },
+      },
+      {
+        seq: 2,
+        turnId: "turn-2",
+        timestamp: "2026-02-13T00:00:00.100Z",
+        item: { type: "user_message", text: "second", messageId: "shared-id" },
+      },
+      {
+        seq: 3,
+        timestamp: "2026-02-13T00:00:00.200Z",
+        item: { type: "user_message", text: "anon 1" },
+      },
+      {
+        seq: 4,
+        timestamp: "2026-02-13T00:00:00.300Z",
+        item: { type: "user_message", text: "anon 2" },
+      },
+    ];
+
+    const projected = projectTimelineRows({ rows, mode: "projected" });
+
+    expect(projected.map((entry) => entry.item)).toEqual([
+      { type: "user_message", text: "first", messageId: "shared-id" },
+      { type: "user_message", text: "second", messageId: "shared-id" },
+      { type: "user_message", text: "anon 1" },
+      { type: "user_message", text: "anon 2" },
+    ]);
+  });
+
   test("returns canonical rows unchanged in canonical mode", () => {
     const rows: AgentTimelineRow[] = [
       {

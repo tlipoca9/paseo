@@ -455,6 +455,43 @@ describe("wire compatibility", () => {
     expect(currentParsed.payload.entries[0]?.collapsed).toContain("reasoning_merge");
   });
 
+  test("downgrades identity collapse on user_message rows for clients without plugin_timeline_items", async () => {
+    const rows = [
+      {
+        seq: 1,
+        timestamp: "2026-05-02T00:00:00.000Z",
+        item: { type: "user_message" as const, text: "/goal", messageId: "user_message_chunk:1" },
+      },
+      {
+        seq: 2,
+        timestamp: "2026-05-02T00:00:00.100Z",
+        item: {
+          type: "user_message" as const,
+          text: "/goal LOOP\n\nFull prompt",
+          messageId: "user_message_chunk:1",
+        },
+      },
+    ];
+
+    const legacyResponse = await emitTimelineResponse({ rows });
+    const legacyParsed = LegacyFetchAgentTimelineResponseMessageSchema.parse(legacyResponse);
+    expect(legacyParsed.payload.entries).toHaveLength(1);
+    expect(legacyParsed.payload.entries[0]?.item).toMatchObject({
+      type: "user_message",
+      text: "/goal LOOP\n\nFull prompt",
+      messageId: "user_message_chunk:1",
+    });
+    expect(legacyParsed.payload.entries[0]?.collapsed).toEqual([]);
+
+    const modernResponse = await emitTimelineResponse({
+      rows,
+      clientCapabilities: { [CLIENT_CAPS.pluginTimelineItems]: true },
+    });
+    const modernParsed = FetchAgentTimelineResponseMessageSchema.parse(modernResponse);
+    expect(modernParsed.payload.entries).toHaveLength(1);
+    expect(modernParsed.payload.entries[0]?.collapsed).toContain("identity");
+  });
+
   test("carries canonical turn IDs to new clients while legacy schemas ignore them", async () => {
     const response = await emitTimelineResponse({
       rows: [

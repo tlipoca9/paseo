@@ -2287,6 +2287,105 @@ describe("turn lifecycle events", () => {
       ["native-1", "native-2"],
     );
   });
+
+  it("updates canonical user_message snapshots with the same messageId during hydration and live streaming", () => {
+    const hydrated = hydrateStreamState(
+      [
+        {
+          event: {
+            type: "timeline",
+            provider: "antigravity",
+            item: {
+              type: "user_message",
+              text: "/goal",
+              messageId: "user_message_chunk:168",
+            },
+          },
+          timestamp: new Date("2025-01-01T15:03:00Z"),
+          timelineCursor: { epoch: "ep-1", seq: 10 },
+        },
+        {
+          event: {
+            type: "timeline",
+            provider: "antigravity",
+            item: {
+              type: "user_message",
+              text: "/goal LOOP\n\n1. Fix the bug",
+              messageId: "user_message_chunk:168",
+            },
+          },
+          timestamp: new Date("2025-01-01T15:03:01Z"),
+          timelineCursor: { epoch: "ep-1", seq: 11 },
+        },
+      ],
+      { source: "canonical" },
+    );
+
+    expect(hydrated).toHaveLength(1);
+    expect(hydrated[0]).toMatchObject({
+      kind: "user_message",
+      id: "user_message_chunk:168",
+      messageId: "user_message_chunk:168",
+      text: "/goal LOOP\n\n1. Fix the bug",
+      timelineCursor: { epoch: "ep-1", seq: 11 },
+    });
+
+    const firstLive = applyStreamEvent({
+      tail: [],
+      head: [],
+      event: {
+        type: "timeline",
+        provider: "antigravity",
+        item: { type: "user_message", text: "/goal", messageId: "user_message_chunk:168" },
+      },
+      timestamp: new Date("2025-01-01T15:03:00Z"),
+      timelineCursor: { epoch: "ep-1", seq: 10 },
+    });
+    const secondLive = applyStreamEvent({
+      tail: firstLive.tail,
+      head: firstLive.head,
+      event: {
+        type: "timeline",
+        provider: "antigravity",
+        item: {
+          type: "user_message",
+          text: "/goal LOOP\n\n1. Fix the bug",
+          messageId: "user_message_chunk:168",
+        },
+      },
+      timestamp: new Date("2025-01-01T15:03:01Z"),
+      timelineCursor: { epoch: "ep-1", seq: 11 },
+    });
+
+    expect(secondLive.tail).toHaveLength(1);
+    expect(secondLive.tail[0]).toMatchObject({
+      kind: "user_message",
+      id: "user_message_chunk:168",
+      messageId: "user_message_chunk:168",
+      text: "/goal LOOP\n\n1. Fix the bug",
+      timelineCursor: { epoch: "ep-1", seq: 11 },
+    });
+  });
+
+  it("does not overwrite a newer canonical user_message snapshot with an older cursor", () => {
+    const newer = createUserMessage({
+      id: "user_message_chunk:168",
+      messageId: "user_message_chunk:168",
+      text: "/goal LOOP\n\n1. Fix the bug",
+      timestamp: new Date("2025-01-01T15:03:01Z"),
+      timelineCursor: { epoch: "ep-1", seq: 11 },
+    });
+    const older = createUserMessage({
+      id: "user_message_chunk:168",
+      messageId: "user_message_chunk:168",
+      text: "/goal",
+      timestamp: new Date("2025-01-01T15:03:00Z"),
+      timelineCursor: { epoch: "ep-1", seq: 10 },
+    });
+
+    const result = upsertUserMessage([newer], older);
+    expect(result).toEqual([newer]);
+  });
 });
 
 describe("notification timeline items", () => {
@@ -2482,11 +2581,7 @@ it("keeps mobile summaries separated by assistant narration as distinct cards in
     new Date(3),
   );
 
-  expect(state.map((item) => item.kind)).toEqual([
-    "tool_call",
-    "assistant_message",
-    "tool_call",
-  ]);
+  expect(state.map((item) => item.kind)).toEqual(["tool_call", "assistant_message", "tool_call"]);
   expect(state[0]).toMatchObject({
     payload: {
       data: {

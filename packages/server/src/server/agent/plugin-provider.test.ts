@@ -609,6 +609,65 @@ test("combined plugin rewind replays the retained native branch", async () => {
   });
 });
 
+test("replayed cumulative user_message snapshots collapse into one complete user message", async () => {
+  const harness = createProviderHarness({
+    capabilities: CAPABILITIES,
+    handleInput(input, emit) {
+      if (input.type !== "session.open") return false;
+      emit({
+        type: "timeline.item",
+        sessionId: input.sessionId,
+        item: { type: "user_message", id: "user_message_chunk:168", text: "/goal" },
+      });
+      emit({
+        type: "timeline.item",
+        sessionId: input.sessionId,
+        item: {
+          type: "user_message",
+          id: "user_message_chunk:168",
+          text: "/goal LOOP\n\n1. Fix the bug",
+        },
+      });
+      emit({
+        type: "timeline.item",
+        sessionId: input.sessionId,
+        item: { type: "assistant_message", id: "agent_message_chunk:169", text: "Working on it." },
+      });
+      emit({
+        type: "session.opened",
+        requestId: input.requestId,
+        sessionId: input.sessionId,
+        capabilities: CAPABILITIES,
+        restoration: "core",
+        persistence: { version: 1, data: { token: "replayed" } },
+        cwd: input.config.cwd,
+      });
+      emit({ type: "session.ready", requestId: input.requestId, sessionId: input.sessionId });
+      return true;
+    },
+  });
+  const registry = new PluginAgentClientRegistry(createTestLogger());
+  registry.replace([harness.registration]);
+  const client = registry.clients()[harness.registration.id]!;
+  const session = await client.resumeSession(
+    {
+      provider: harness.registration.id,
+      sessionId: 'plugin:{"version":1,"data":{"token":"replayed"}}',
+      metadata: { pluginProviderPersistence: { version: 1, data: { token: "replayed" } } },
+    },
+    { provider: harness.registration.id, cwd: tmpdir() },
+  );
+  try {
+    expect(await pluginMessages(session)).toEqual([
+      "/goal LOOP\n\n1. Fix the bug",
+      "Working on it.",
+    ]);
+  } finally {
+    await session.close();
+    await registry.shutdown();
+  }
+});
+
 test("a rewind reopens with the options as they stand, a reset included", async () => {
   const options: Record<string, boolean> = {};
   const report = (emit: (event: ProviderEvent) => void, sessionId: string) =>

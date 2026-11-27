@@ -235,6 +235,76 @@ interface UserMessageProductionResult {
   matched: boolean;
 }
 
+function isOlderCanonicalCursor(
+  existing: TimelinePosition | undefined,
+  incoming: TimelinePosition | undefined,
+): boolean {
+  return Boolean(
+    existing && incoming && existing.epoch === incoming.epoch && incoming.seq < existing.seq,
+  );
+}
+
+function shouldAdoptIncomingCanonicalPresentation(
+  existing: UserMessageItem,
+  incoming: UserMessageItem,
+): boolean {
+  // Locally submitted rows own their presentation (typed text, images, attachments).
+  if (existing.clientMessageId !== undefined || incoming.clientMessageId !== undefined) {
+    return false;
+  }
+  if (existing.images !== undefined || existing.attachments !== undefined) {
+    return false;
+  }
+  if (!existing.messageId || existing.messageId !== incoming.messageId) {
+    return false;
+  }
+  // Never replace a newer canonical snapshot with an older one (for example, prepended pages).
+  if (isOlderCanonicalCursor(existing.timelineCursor, incoming.timelineCursor)) {
+    return false;
+  }
+  return true;
+}
+
+function mergeMatchedUserMessage(
+  existing: UserMessageItem,
+  incoming: UserMessageItem,
+  presentationPolicy: UserMessagePresentationPolicy,
+): UserMessageItem {
+  const adoptIncomingCanonical =
+    presentationPolicy === "existing" &&
+    shouldAdoptIncomingCanonicalPresentation(existing, incoming);
+  const presentation =
+    presentationPolicy === "incoming" || adoptIncomingCanonical ? incoming : existing;
+  const keepExistingCursor =
+    presentationPolicy === "existing" &&
+    !adoptIncomingCanonical &&
+    isOlderCanonicalCursor(existing.timelineCursor, incoming.timelineCursor);
+  return createUserMessage({
+    ...presentation,
+    ...(adoptIncomingCanonical ? { id: existing.id } : {}),
+    turnId: presentation.turnId ?? existing.turnId,
+    clientMessageId: incoming.clientMessageId ?? existing.clientMessageId,
+    messageId: incoming.messageId ?? existing.messageId,
+    timelineCursor: keepExistingCursor
+      ? existing.timelineCursor
+      : (incoming.timelineCursor ?? existing.timelineCursor),
+  });
+}
+
+function userMessagesEqual(a: UserMessageItem, b: UserMessageItem): boolean {
+  return (
+    a.id === b.id &&
+    a.clientMessageId === b.clientMessageId &&
+    a.messageId === b.messageId &&
+    a.timelineCursor === b.timelineCursor &&
+    a.turnId === b.turnId &&
+    a.text === b.text &&
+    a.timestamp === b.timestamp &&
+    a.images === b.images &&
+    a.attachments === b.attachments
+  );
+}
+
 function produceUserMessage(
   items: StreamItem[],
   incoming: UserMessageItem,
@@ -261,23 +331,8 @@ function produceUserMessage(
   if (!existing || existing.kind !== "user_message") {
     throw new Error("User message upsert matched a non-user row");
   }
-  const presentation = presentationPolicy === "incoming" ? incoming : existing;
-  const merged = createUserMessage({
-    ...presentation,
-    clientMessageId: incoming.clientMessageId ?? existing.clientMessageId,
-    messageId: incoming.messageId ?? existing.messageId,
-    timelineCursor: incoming.timelineCursor ?? existing.timelineCursor,
-  });
-  if (
-    existing.id === merged.id &&
-    existing.clientMessageId === merged.clientMessageId &&
-    existing.messageId === merged.messageId &&
-    existing.timelineCursor === merged.timelineCursor &&
-    existing.text === merged.text &&
-    existing.timestamp === merged.timestamp &&
-    existing.images === merged.images &&
-    existing.attachments === merged.attachments
-  ) {
+  const merged = mergeMatchedUserMessage(existing, incoming, presentationPolicy);
+  if (userMessagesEqual(existing, merged)) {
     return { items, index, message: existing, matched: true };
   }
   const next = [...items];
